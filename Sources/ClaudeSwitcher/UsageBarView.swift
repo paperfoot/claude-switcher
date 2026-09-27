@@ -43,11 +43,12 @@ final class UsageBarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let font = NSFont.menuFont(ofSize: 11)
         let label: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-        let number: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
         let note: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor]
 
         // Rows are laid out top-down; AppKit's origin is bottom-left.
         for (index, row) in rows.enumerated() {
+            let tint = row.percent == nil ? NSColor.secondaryLabelColor : Self.color(for: row.level)
+            let number: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: tint]
             let top = bounds.height - 3 - CGFloat(index + 1) * Self.rowHeight
             let baseline = top + (Self.rowHeight - font.capHeight) / 2 - 1
             var x = Self.titleInset
@@ -57,11 +58,11 @@ final class UsageBarView: NSView {
 
             let track = NSRect(x: x, y: top + (Self.rowHeight - Self.barHeight) / 2, width: Self.barWidth, height: Self.barHeight)
             // A tiny battery gauge, with the percentage beside it. Fill means usage consumed.
-            NSColor.secondaryLabelColor.withAlphaComponent(0.55).setStroke()
+            tint.withAlphaComponent(0.7).setStroke()
             let outline = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
             outline.lineWidth = 0.8
             outline.stroke()
-            NSColor.secondaryLabelColor.withAlphaComponent(0.55).setFill()
+            tint.withAlphaComponent(0.7).setFill()
             NSBezierPath(roundedRect: NSRect(x: track.maxX + 1, y: track.midY - 1.5, width: 1.5, height: 3),
                          xRadius: 0.6, yRadius: 0.6).fill()
             if let percent = row.percent, percent > 0 {
@@ -69,7 +70,7 @@ final class UsageBarView: NSView {
                 let fill = NSRect(x: inner.minX, y: inner.minY,
                                   width: max(1, inner.width * CGFloat(min(percent, 100)) / 100),
                                   height: inner.height)
-                Self.color(for: row.level).setFill()
+                tint.setFill()
                 NSBezierPath(roundedRect: fill, xRadius: 1, yRadius: 1).fill()
             }
             x += Self.barWidth + 10
@@ -90,9 +91,21 @@ final class UsageBarView: NSView {
 
     private static func color(for level: UsageLevel) -> NSColor {
         switch level {
-        case .normal: return .labelColor
-        case .warning: return .systemOrange
-        case .limit: return .systemRed
+        case .normal: return healthyColor
+        case .warning: return warningColor
+        case .critical, .limit: return criticalColor
+        }
+    }
+
+    // Darker text colors in light mode keep these tiny numbers readable.
+    private static let healthyColor = adaptiveColor(light: (0.12, 0.46, 0.27), dark: (0.38, 0.82, 0.51))
+    private static let warningColor = adaptiveColor(light: (0.60, 0.36, 0.02), dark: (1.0, 0.72, 0.29))
+    private static let criticalColor = adaptiveColor(light: (0.76, 0.16, 0.14), dark: (1.0, 0.39, 0.35))
+
+    private static func adaptiveColor(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
         }
     }
 }
