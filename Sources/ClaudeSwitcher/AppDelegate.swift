@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var usageFailures: Set<String> = []
     private var nextUsageRefresh: [String: Date] = [:]
     private var isFetchingUsage = false
+    private var usageRefreshTimer: Timer?
+    private var isSleeping = false
 
     /// profile id -> the usage Claude Desktop last recorded for that profile, read from its
     /// own `plan-usage-history.json` when the menu opens. Read-only; never fetched.
@@ -83,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         reloadConfig()
+        liveUsage = LiveUsageCache.load(profiles: config.profiles)
+        nextUsageRefresh = liveUsage.mapValues { LiveUsagePolicy.nextRefresh(for: $0, now: Date()) }
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
@@ -114,7 +118,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated { self?.applicationDidTerminate(bundleID: bundleID) }
         }
         workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.outsideTriggerForReopen() }
+            MainActor.assumeIsolated {
+                self?.isSleeping = false
+                self?.outsideTriggerForReopen()
+                self?.refreshSignInStates(force: true)
+            }
+        }
+
+        workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.isSleeping = true
+                self?.usageRefreshTimer?.invalidate()
+            }
         }
 
         refreshSignInStates()
@@ -203,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let loaded = try Config.load()
             if loaded.profiles != config.profiles {
                 accountStatuses = [:]
-                liveUsage = [:]
+                liveUsage = LiveUsageCache.load(profiles: loaded.profiles)
                 usageFailures = []
                 nextUsageRefresh = [:]
                 lastAccountCheck = .distantPast
@@ -233,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Background probes
 
-    /// A menu open starts at most one bounded background check per fifteen seconds.
+    /// Menu opens are throttled; the background schedule also checks identity before usage.
     private func refreshSignInStates(force: Bool = false) {
         guard !isProbingSignIn, force || Date().timeIntervalSince(lastAccountCheck) >= 15 else { return }
         isProbingSignIn = true
@@ -263,10 +278,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         lastAccountCheck = Date()
         accountStatuses = states
-        for profile in profiles where !states[profile.id, default: .unavailable].matches(profile.expectedEmail) {
-            liveUsage[profile.id] = nil
-            nextUsageRefresh[profile.id] = nil
+        for profile in profiles {
+            let status = states[profile.id, default: .unavailable]
+            // An offline/failed identity check is not evidence of sign-out.
+            if status == .unavailable { continue }
+            if !status.matches(profile.expectedEmail) ||
+                (liveUsage[profile.id].map { status.email?.caseInsensitiveCompare($0.email) != .orderedSame } ?? false) {
+                liveUsage[profile.id] = nil
+                nextUsageRefresh[profile.id] = nil
+            }
         }
+        persistUsageCache()
         if isMenuOpen, let menu = statusItem?.menu {
             MenuBuilder.updateAccounts(in: menu, config: config, statuses: states)
             updateUsageRows(menu)
@@ -275,14 +297,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshLiveUsage() {
-        guard !isFetchingUsage else { return }
+        guard !isFetchingUsage, !isSleeping else { return }
         let now = Date()
         let pending = config.profiles.compactMap { profile -> (Profile, String)? in
             guard let status = accountStatuses[profile.id], status.matches(profile.expectedEmail),
                   let email = status.email, now >= nextUsageRefresh[profile.id, default: .distantPast] else { return nil }
             return (profile, email)
         }
-        guard !pending.isEmpty else { return }
+        guard !pending.isEmpty else {
+            scheduleUsageRefresh()
+            return
+        }
+        usageRefreshTimer?.invalidate()
         isFetchingUsage = true
         let executable = Diagnostics.locateOnSearchPath("claude")
         Task.detached(priority: .utility) {
@@ -298,7 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     await self.applyLiveUsage(result, profile: profile)
                 }
             }
-            await MainActor.run { self.isFetchingUsage = false }
+            await MainActor.run {
+                self.isFetchingUsage = false
+                self.scheduleUsageRefresh()
+            }
         }
     }
 
@@ -310,15 +339,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             liveUsage[profile.id] = snapshot
             usageFailures.remove(profile.id)
             let now = Date()
-            let nextReset = [snapshot.fiveHour?.resetsAt, snapshot.sevenDay?.resetsAt]
-                .compactMap { $0 }.filter { $0 > now }.min() ?? .distantFuture
-            nextUsageRefresh[profile.id] = min(now.addingTimeInterval(LiveUsagePolicy.refreshInterval), nextReset)
+            nextUsageRefresh[profile.id] = LiveUsagePolicy.nextRefresh(for: snapshot, now: now)
         case .failure(let error):
             usageFailures.insert(profile.id)
             if case .accountMismatch = error { liveUsage[profile.id] = nil }
             nextUsageRefresh[profile.id] = Date().addingTimeInterval(LiveUsagePolicy.failureBackoff)
         }
+        persistUsageCache()
         if isMenuOpen, let menu = statusItem?.menu { updateUsageRows(menu) }
+    }
+
+    private func persistUsageCache() {
+        // A few small readings, written atomically without any credential material.
+        try? LiveUsageCache.save(liveUsage, profiles: config.profiles)
+    }
+
+    private func scheduleUsageRefresh() {
+        usageRefreshTimer?.invalidate()
+        guard !isSleeping, !isFetchingUsage else { return }
+        let now = Date()
+        let due = config.profiles.compactMap { profile -> Date? in
+            guard accountStatuses[profile.id]?.matches(profile.expectedEmail) == true,
+                  accountStatuses[profile.id]?.email != nil else { return nil }
+            return nextUsageRefresh[profile.id] ?? now
+        }.min() ?? now.addingTimeInterval(LiveUsagePolicy.refreshInterval)
+        // One timer, no busy polling; wake notifications handle time spent asleep.
+        let timer = Timer(timeInterval: max(5, due.timeIntervalSince(now)), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let menu = self.statusItem?.menu, self.isMenuOpen { self.updateUsageRows(menu) }
+                self.refreshSignInStates(force: true)
+            }
+        }
+        timer.tolerance = 2
+        usageRefreshTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func updateUsageRows(_ menu: NSMenu) {
