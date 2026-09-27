@@ -12,6 +12,7 @@ enum MenuBuilder {
     struct Actions: Sendable {
         var selectProfile: Selector
         var copyTerminalCommand: Selector
+        var openTerminal: Selector
         var addProfile: Selector
         var renameProfile: Selector
         var removeProfile: Selector
@@ -108,6 +109,20 @@ enum MenuBuilder {
 
         menu.addItem(.separator())
 
+        // MARK: Open terminal profile
+        let terminalItem = NSMenuItem(title: "Open Claude Code", action: nil, keyEquivalent: "")
+        let terminalMenu = NSMenu()
+        terminalMenu.autoenablesItems = false
+        for profile in input.config.profiles {
+            let sub = NSMenuItem(title: profile.label, action: actions.openTerminal, keyEquivalent: "")
+            sub.target = target
+            sub.representedObject = profile.id
+            sub.toolTip = "Opens this account in a new Terminal window. Sign in once on first use."
+            terminalMenu.addItem(sub)
+        }
+        terminalItem.submenu = terminalMenu
+        menu.addItem(terminalItem)
+
         // MARK: Copy terminal command
         let copyItem = NSMenuItem(title: "Copy terminal command", action: nil, keyEquivalent: "")
         let copyMenu = NSMenu()
@@ -121,7 +136,7 @@ enum MenuBuilder {
             sub.target = target
             sub.representedObject = profile.id
             sub.isEnabled = true
-            sub.toolTip = "Copies:  \(command)\nRun it in a terminal to use the claude CLI as this profile. ~/.claude stays shared."
+            sub.toolTip = "Copies:  \(command)\nRun it in a terminal to use the claude CLI as this profile. Terminal settings and history belong to this profile."
             copyMenu.addItem(sub)
         }
         copyItem.submenu = copyMenu
@@ -302,7 +317,7 @@ enum MenuBuilder {
 
     static func hintText(signedIn: Bool?) -> String {
         switch signedIn {
-        case .some(true):  return "terminal: signed in"
+        case .some(true):  return "terminal: credentials found"
         case .some(false): return "terminal: no credentials found"
         case nil:          return "terminal: unknown"
         }

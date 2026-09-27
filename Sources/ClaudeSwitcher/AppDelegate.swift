@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let actions = MenuBuilder.Actions(
         selectProfile: #selector(selectProfile(_:)),
         copyTerminalCommand: #selector(copyTerminalCommand(_:)),
+        openTerminal: #selector(openTerminal(_:)),
         addProfile: #selector(addProfile(_:)),
         renameProfile: #selector(renameProfile(_:)),
         removeProfile: #selector(removeProfile(_:)),
@@ -348,6 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try? await Task.sleep(for: .seconds(30))
             guard self.isBusy, self.launchGeneration == generation else { return }
             self.isBusy = false
+            self.launchGeneration &+= 1
             self.rebuildIfVisible()
         }
     }
@@ -391,6 +393,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func openTerminal(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let profile = config.profile(id: id) else { return }
+        let home = NSHomeDirectory()
+        let candidates = ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude",
+                          "\(home)/.npm-global/bin/claude", "/usr/local/bin/claude"]
+        guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            presentAlert(style: .warning, title: "Claude Code was not found",
+                         message: "Install Claude Code, then use Open Claude Code again.")
+            return
+        }
+        do {
+            let directory = URL(fileURLWithPath: home)
+                .appendingPathComponent("Library/Application Support/Claude Switcher/Launchers", isDirectory: true)
+            let script = try TerminalLauncher.write(profile: profile, executable: executable, directory: directory)
+            let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+            NSWorkspace.shared.open([script], withApplicationAt: terminal,
+                                    configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                if let error {
+                    let message = error.localizedDescription
+                    Task { @MainActor in
+                        self.presentAlert(style: .warning, title: "Could not open Terminal", message: message)
+                    }
+                }
+            }
+        } catch {
+            presentAlert(style: .warning, title: "Could not prepare Claude Code", message: error.localizedDescription)
+        }
+    }
+
     @objc private func copyTerminalCommand(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
               let profile = config.profile(id: id) else { return }
@@ -406,8 +438,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         A profile is a separate Claude Desktop login \u{2014} its own account for both chat and the \
         Code tab \u{2014} that runs alongside your other profiles.
 
-        Your ~/.claude stays shared: projects, session history, skills, agents, plugins, memory \
-        and settings follow you into every profile.
+        Desktop Code keeps using your shared ~/.claude. Terminal Claude Code has separate \
+        credentials, settings and history for each profile.
 
         Claude opens on this profile as soon as you add it, so you can sign in to the account \
         you want to use. Claude Switcher never handles your credentials.
@@ -432,13 +464,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             credDir: PathNormalizer.normalize("\(home)/.claude-accounts/\(slug)")
         )
 
+        let previousConfig = config
         do {
             try config.addProfile(profile)
         } catch {
             presentAlert(style: .warning, title: "Could not add \u{201C}\(label)\u{201D}", message: error.localizedDescription)
             return
         }
-        saveConfig(failureTitle: "Could not save the new profile")
+        guard saveConfig(failureTitle: "Could not save the new profile") else {
+            config = previousConfig
+            return
+        }
         if config.blockClaudeUpdates {
             // Before its first launch, so the new profile's updater never starts either.
             _ = try? UpdateBlock.apply(userDataDir: profile.userDataDir)

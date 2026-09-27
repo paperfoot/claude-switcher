@@ -12,7 +12,7 @@ import ClaudeSwitcherCore
 //     Update…" action — its installer cannot run while any instance is up.)
 //   * ~/.claude (projects, history, skills, agents, plugins, memory, settings, CLAUDE.md)
 //     is resolved as CLAUDE_CONFIG_DIR ?? ~/.claude, independently of --user-data-dir.
-//     This app NEVER sets or modifies CLAUDE_CONFIG_DIR: keeping ~/.claude shared across
+//     Desktop launches leave CLAUDE_CONFIG_DIR untouched: keeping ~/.claude shared across
 //     every account is the entire point of the product.
 //   * CLAUDE_SECURESTORAGE_CONFIG_DIR is for the TERMINAL claude CLI only. It selects a
 //     separate credential slot while still sharing ~/.claude, and is never passed to the app.
@@ -37,7 +37,7 @@ HOW PROFILES DIFFER
 
 WHAT STAYS SHARED
   ~/.claude — projects, session history, skills, agents, plugins, memory, settings and
-  CLAUDE.md — is shared by every profile. claude-switcher never sets CLAUDE_CONFIG_DIR,
+  CLAUDE.md — is shared by Desktop profiles. Terminal profiles have separate config directories,
   never sets CLAUDE_CODE_OAUTH_TOKEN, and never reads or writes Keychain secrets (it only
   checks whether a credential item exists). Usage shown per profile is read from that
   profile's own plan-usage-history.json, which Claude Desktop writes; it is never fetched.
