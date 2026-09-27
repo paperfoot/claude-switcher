@@ -220,11 +220,13 @@ public struct WeeklyReset: Equatable, Sendable {
 public enum UsageLevel: Equatable, Sendable {
     case normal
     case warning
+    case critical
     case limit
 
     public static func of(_ percent: Int) -> UsageLevel {
         if percent >= 100 { return .limit }
-        if percent >= 80 { return .warning }
+        if percent >= 90 { return .critical }
+        if percent >= 70 { return .warning }
         return .normal
     }
 }
