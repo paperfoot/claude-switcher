@@ -39,7 +39,7 @@ public enum Diagnostics {
         if let update, let summary = stagedUpdateSummary(update, runningCount: running.count) {
             lines.append("Update:       \(summary)")
         }
-        lines.append("Shared dir:   \(sharedConfigDirectory.path) (shared by every profile; CLAUDE_CONFIG_DIR is never set by this app)")
+        lines.append("Shared dir:   \(sharedConfigDirectory.path) (Desktop Code; terminal profiles use separate config directories)")
         lines.append("Active profile: \(config.activeProfileId)")
         lines.append("")
 
@@ -338,7 +338,7 @@ public enum Diagnostics {
 
         lines.append("GUARANTEES")
         lines.append("  Keychain secrets are never read, written or deleted — existence only.")
-        lines.append("  CLAUDE_CODE_OAUTH_TOKEN and CLAUDE_CONFIG_DIR are never set.")
+        lines.append("  Desktop launches do not receive CLI credentials. Terminal launchers isolate account config.")
         lines.append("  No CLAUDE_* variable is ever passed to Claude.app; the account comes from --user-data-dir.")
         lines.append("  The Claude.app bundle is never modified, copied or duplicated.")
         lines.append("  Claude is only ever asked to quit by \u{201C}Quit All & Install Update\u{2026}\u{201D}, after you confirm — never forced.")

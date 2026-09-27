@@ -58,4 +58,12 @@ public enum PathNormalizer {
         // 5 — NFC last, so the returned bytes are final.
         return path.precomposedStringWithCanonicalMapping
     }
+    /// Filesystem identity for Desktop profiles. Do not use this for Keychain hashing:
+    /// credential service names depend on the exact normalized environment string.
+    public static func filesystemIdentity(_ raw: String, home: String = NSHomeDirectory()) -> String {
+        let normalized = normalize(raw, home: home)
+        guard !normalized.isEmpty else { return "" }
+        return URL(fileURLWithPath: normalized).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
 }

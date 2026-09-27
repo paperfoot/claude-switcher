@@ -62,17 +62,29 @@ public enum LaunchPlanning {
         return ["--user-data-dir=\(normalized)"]
     }
 
-    /// The shell command that runs the terminal `claude` CLI as this profile.
-    ///
-    /// A `nil` credDir means the default credential slot, so the variable is omitted
-    /// **entirely**. Passing it as an empty string is not equivalent to omitting it in
-    /// general, and exporting a blank value is exactly the kind of thing that silently
-    /// selects the wrong slot — so a blank directory degrades to the plain command.
-    public static func terminalCommand(for profile: Profile) -> String {
-        guard let dir = profile.credDir else { return "claude" }
-        let normalized = PathNormalizer.normalize(dir)
-        guard !normalized.isEmpty else { return "claude" }
-        return "CLAUDE_SECURESTORAGE_CONFIG_DIR=\(shellQuoted(normalized)) claude"
+    /// Clear inherited account selectors before choosing this profile. Named CLI profiles
+    /// isolate both credentials and account metadata: sharing config while switching only
+    /// the Keychain slot can show the previous account's email and organization.
+    public static let accountEnvironmentKeys = [
+        "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    ]
+
+    public static func terminalCommand(for profile: Profile, executable: String = "claude") -> String {
+        var parts = ["/usr/bin/env"]
+        for key in accountEnvironmentKeys { parts += ["-u", key] }
+        if let dir = profile.credDir {
+            let normalized = PathNormalizer.normalize(dir)
+            if !normalized.isEmpty {
+                parts.append("CLAUDE_CONFIG_DIR=\(shellQuoted(normalized))")
+                parts.append("CLAUDE_SECURESTORAGE_CONFIG_DIR=\(shellQuoted(normalized))")
+            }
+        }
+        parts.append(shellQuoted(executable))
+        return parts.joined(separator: " ")
     }
 
     /// Double-quotes a value, escaping the characters the shell still expands inside quotes.

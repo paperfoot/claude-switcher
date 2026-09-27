@@ -287,7 +287,7 @@ public enum InstanceManager {
     /// blank config value from being launched as `--user-data-dir=`.
     private static func normalizedDirectory(_ raw: String?) -> String? {
         guard let raw else { return nil }
-        let normalized = PathNormalizer.normalize(raw)
+        let normalized = PathNormalizer.filesystemIdentity(raw)
         return normalized.isEmpty ? nil : normalized
     }
 

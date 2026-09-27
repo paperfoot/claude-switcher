@@ -98,7 +98,7 @@ final class InstanceBindingTests: XCTestCase {
 
     func testDefaultProfileMatchesOnlyAnInstanceWithNoUserDataDir() {
         let running = [RunningInstance(pid: 1, profile: .defaultProfile),
-                       RunningInstance(pid: 2, profile: .directory("/tmp/Claude-Work"))]
+                       RunningInstance(pid: 2, profile: .directory(PathNormalizer.filesystemIdentity("/tmp/Claude-Work")))]
         XCTAssertEqual(ProfileMatching.instance(for: defaultProfile, in: running)?.pid, 1)
         XCTAssertEqual(ProfileMatching.instance(for: workProfile, in: running)?.pid, 2)
     }
@@ -129,24 +129,22 @@ final class InstanceBindingTests: XCTestCase {
         XCTAssertEqual(LaunchPlanning.launchArguments(for: profile), ["--user-data-dir=/tmp/Claude-Work"])
     }
 
-    /// Omitting the variable is what selects the default credential slot; exporting an empty
-    /// string is a different thing entirely and must never be emitted.
-    func testDefaultProfileTerminalCommandOmitsTheVariable() {
+    func testDefaultProfileTerminalCommandClearsInheritedSelectors() {
         let command = LaunchPlanning.terminalCommand(for: defaultProfile)
-        XCTAssertEqual(command, "claude")
-        XCTAssertFalse(command.contains("CLAUDE_SECURESTORAGE_CONFIG_DIR"))
+        XCTAssertTrue(command.contains("-u CLAUDE_CONFIG_DIR"))
+        XCTAssertTrue(command.contains("-u CLAUDE_SECURESTORAGE_CONFIG_DIR"))
+        XCTAssertFalse(command.contains("CLAUDE_CONFIG_DIR="))
     }
 
     func testNamedProfileTerminalCommandQuotesThePath() {
         let profile = Profile(id: "w", label: "W", userDataDir: nil,
                               credDir: "/Users/me/Library/Application Support/creds")
-        XCTAssertEqual(LaunchPlanning.terminalCommand(for: profile),
-                       "CLAUDE_SECURESTORAGE_CONFIG_DIR=\"/Users/me/Library/Application Support/creds\" claude")
+        let command = LaunchPlanning.terminalCommand(for: profile)
+        XCTAssertTrue(command.contains("CLAUDE_CONFIG_DIR=\"/Users/me/Library/Application Support/creds\""))
+        XCTAssertTrue(command.contains("CLAUDE_SECURESTORAGE_CONFIG_DIR=\"/Users/me/Library/Application Support/creds\""))
     }
 
-    func testTerminalCommandNeverEmitsCLAUDE_CONFIG_DIR() {
-        for profile in [defaultProfile, workProfile] {
-            XCTAssertFalse(LaunchPlanning.terminalCommand(for: profile).contains("CLAUDE_CONFIG_DIR="))
-        }
+    func testNamedTerminalProfileIsolatesAccountMetadata() {
+        XCTAssertTrue(LaunchPlanning.terminalCommand(for: workProfile).contains("CLAUDE_CONFIG_DIR="))
     }
 }
