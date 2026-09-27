@@ -172,9 +172,8 @@ public struct Config: Codable, Equatable, Sendable {
         self.blockClaudeUpdates = try container.decodeIfPresent(Bool.self, forKey: .blockClaudeUpdates) ?? false
 
         // Ids are the primary key for every lookup and mutation, so reject a
-        // file that would make `profile(id:)` ambiguous. Directory collisions
-        // are deliberately *not* fatal here — they are rejected when adding a
-        // profile, but an existing odd file still loads so the user can fix it.
+        // file that would make `profile(id:)` ambiguous. Desktop directories must
+        // also be distinct, including aliases, to keep account labels accurate.
         var seen = Set<String>()
         for profile in profiles {
             guard !profile.id.isEmpty else {
@@ -195,9 +194,10 @@ public struct Config: Codable, Equatable, Sendable {
                 + "default account). Give the others their own application data directory."
             )
         }
-        for profile in profiles {
-            try Config.validateReservedDirectory(profile.userDataDir)
-        }
+        var validated = self
+        validated.profiles = []
+        for profile in profiles { try validated.addProfile(profile) }
+
     }
 
     /// Resolves a symlinked destination to the file it points at, leaving other paths alone.
@@ -234,7 +234,7 @@ public struct Config: Codable, Equatable, Sendable {
     /// profile — so a profile living there would share a directory with them.
     static func validateReservedDirectory(_ raw: String?) throws {
         guard let raw else { return }
-        let candidate = PathNormalizer.normalize(raw)
+        let candidate = PathNormalizer.filesystemIdentity(raw)
         guard !candidate.isEmpty else { return }
 
         let home = PathNormalizer.normalize(NSHomeDirectory())
@@ -245,7 +245,7 @@ public struct Config: Codable, Equatable, Sendable {
             (defaultUserDataDir(home: home),
              "Claude.app\u{2019}s own default profile directory"),
         ]
-        for entry in reserved where entry.path == candidate {
+        for entry in reserved where PathNormalizer.filesystemIdentity(entry.path) == candidate {
             throw ConfigError.reservedUserDataDir(candidate, entry.why)
         }
         if (candidate as NSString).lastPathComponent.lowercased().hasSuffix(policyDirectorySuffix) {
@@ -432,14 +432,24 @@ extension Config {
 
         try Config.validateReservedDirectory(p.userDataDir)
 
-        if let newUserDataDir = Config.normalizedDir(p.userDataDir) {
-            let taken = profiles.contains { Config.normalizedDir($0.userDataDir) == newUserDataDir }
+        if let raw = p.userDataDir, !raw.isEmpty {
+            let newUserDataDir = PathNormalizer.filesystemIdentity(raw)
+            let taken = profiles.contains { other in
+                other.userDataDir.map { PathNormalizer.filesystemIdentity($0) } == newUserDataDir
+            }
             guard !taken else { throw ConfigError.duplicateUserDataDir(newUserDataDir) }
         }
 
-        if let newCredDir = Config.normalizedDir(p.credDir) {
-            let taken = profiles.contains { Config.normalizedDir($0.credDir) == newCredDir }
-            guard !taken else { throw ConfigError.duplicateCredDir(newCredDir) }
+        if let raw = p.credDir, !raw.isEmpty {
+            let identity = PathNormalizer.filesystemIdentity(raw)
+            let shared = PathNormalizer.filesystemIdentity("~/.claude")
+            guard identity != shared else {
+                throw ConfigError.malformed("a named terminal profile needs its own config directory")
+            }
+            let taken = profiles.contains { other in
+                other.credDir.map { PathNormalizer.filesystemIdentity($0) } == identity
+            }
+            guard !taken else { throw ConfigError.duplicateCredDir(identity) }
         }
 
         profiles.append(p)
