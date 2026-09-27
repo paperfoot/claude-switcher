@@ -33,6 +33,8 @@ from Claude Code's structured `/usage` request. The CLI owns authentication and 
 switcher never reads tokens. Account identity is checked before and after each usage request.
 No model prompt is sent, and hooks, tools, MCP servers and the transcript scan are disabled.
 
+Gauges and percentages are green below 70%, amber from 70%, and red from 90%. Unknown readings stay gray.
+
 Checks run in the background when the menu opens; usage is cached for five minutes. There is
 no polling timer. Failed requests back off for fifteen minutes, stale readings are hidden,
 and elapsed windows show an unknown value until refreshed. Menu rows update in place.
@@ -49,7 +51,7 @@ Requires macOS 14+ and Swift 6.
 ```sh
 swift test
 swift build -c release
-VERSION=0.6.3 CODESIGN_IDENTITY=- scripts/bundle.sh
+VERSION=0.6.4 CODESIGN_IDENTITY=- scripts/bundle.sh
 ```
 
 The local build is ad-hoc signed for this Mac. It is not a notarized distribution build.
