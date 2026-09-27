@@ -1,76 +1,104 @@
-# Claude Switcher — local build
+# Claude Switcher
 
-A native macOS menu bar launcher for multiple Claude accounts, based on
-[Kevin Chau’s Claude Switcher v0.6.0](https://github.com/kevinchau/claude-switcher/tree/v0.6.0).
-MIT licensed. No third-party packages.
+**Your Claude accounts, one click away.**
 
-## Use
+Open Claude Code as the right account and see its usage before you start. A small native macOS menu bar app, written in Swift and AppKit, with no third-party packages.
 
-Click the people icon, then an email to open Claude Code in Terminal.
-Each account keeps its own login, settings and history. Existing sessions continue as before.
+<p>
+  <img src="assets/usage-light.png" width="320" alt="Light appearance: three example accounts with compact battery gauges, usage percentages, and reset times">
+  <img src="assets/usage-dark.png" width="320" alt="Dark appearance of the same account menu">
+</p>
 
-- **Sign in** opens Claude’s official login flow. After signing in, choose the email again to open Code.
-- **Add account…** takes an email and starts that login flow.
-- **Desktop** opens or focuses separate Claude Desktop profiles.
-- **Settings** contains account management, launch at login and diagnostics.
+<sub>Interface previews rendered with the app’s usage view. Account names and readings are examples.</sub>
 
-The main menu reads the email and plan from `claude auth status --json`.
-It checks again before opening an account. A different or missing email cannot silently open
-an account under the expected email’s label. Failed checks stay visibly distinct from signed-out accounts.
+## What you get
 
-Desktop and Claude Code sign-ins are separate. A Code email does not prove the Desktop profile is
-signed in to the same account. Desktop profile names can be changed under Settings.
+- **An email for every account.** The app verifies the signed-in identity before opening Claude Code.
+- **Separate sessions.** Each added account keeps its own login, settings, and history. Existing terminal sessions keep running.
+- **Usage at a glance.** Tiny battery gauges show five-hour and weekly usage, with percentages and reset times in your local timezone.
+- **A compact menu.** Click an email to open Code. Account management and other options live under Settings.
+- **Desktop profiles too.** Open separate Claude Desktop profiles from the Desktop submenu.
 
-## Isolation and status checks
+Usage means **percentage consumed**. Green is below 70%, amber is 70–89%, and red is 90% or higher. Unknown readings stay gray.
 
-Terminal profiles set both `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` to one private
-account directory. Inherited authentication and provider variables are cleared before checking or
-opening an account. Default Claude data stays in place.
+## Install
 
-The app asks the official CLI for its account summary. Tiny battery gauges beneath each email
-show the five-hour and weekly percentage **used**, alongside the exact reset time. Usage comes
-from Claude Code's structured `/usage` request. The CLI owns authentication and refresh; the
-switcher never reads tokens. Account identity is checked before and after each usage request.
-No model prompt is sent, and hooks, tools, MCP servers and the transcript scan are disabled.
+You need **macOS 14 or later**, a **Swift 6 toolchain**, and [Claude Code](https://code.claude.com/docs/en/setup) installed. Claude Desktop is optional.
 
-Gauges and percentages are green below 70%, amber from 70%, and red from 90%. Unknown readings stay gray.
+Build on the Mac you plan to use:
 
-Checks run in the background when the menu opens; usage is cached for five minutes. There is
-no polling timer. Failed requests back off for fifteen minutes, stale readings are hidden,
-and elapsed windows show an unknown value until refreshed. Menu rows update in place.
+```sh
+git clone https://github.com/paperfoot/claude-switcher.git
+cd claude-switcher
+CODESIGN_IDENTITY=- make install
+open -a "Claude Switcher"
+```
 
-Desktop profiles use separate Electron user-data directories. Desktop Code keeps its app-managed
-account token and the default local Code data. Desktop usage bars are read from each profile’s local
-`plan-usage-history.json` and shown only in the Desktop submenu. They are cached observations;
-reset times there are estimates. The main menu uses exact account usage instead.
+The build is signed locally. This fork does not currently provide a notarized download. Quit an older copy before replacing it.
 
-## Build
+## Add your accounts
 
-Requires macOS 14+ and Swift 6.
+1. Click the people icon in the menu bar. Your existing default Claude Code account appears automatically.
+2. Choose **Add account…**, enter an email, and complete Claude’s sign-in flow.
+3. Click that email whenever you want to open a session with it.
+
+Repeat for your other accounts. Enable **Settings → Launch at Login** to keep the switcher available after restarting your Mac.
+
+A **Sign in** badge means that profile needs authentication. If Claude reports a different email, the app asks you to sign in to the expected account before opening a session.
+
+**Claude Code and Claude Desktop have separate sign-ins.** The main menu shows verified Code accounts. Desktop profile names do not establish which account is signed in inside the Desktop app.
+
+## How it works
+
+The switcher asks the installed Claude Code CLI for account identity and usage. Claude handles authentication and token refresh; the switcher does not read or copy tokens.
+
+Usage checks send no model prompt. Tools, hooks, MCP servers, and transcript scanning are disabled for those checks. They run in the background, with a five-minute cache and no recurring polling timer. Failed requests back off for fifteen minutes; stale or expired readings become unknown until refreshed.
+
+New Code profiles set both `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` to their own directory. Inherited authentication and provider overrides are cleared before checking or opening an account. Your default Claude data stays in place.
+
+<details>
+<summary>Local files and diagnostics</summary>
+
+| Data | Location |
+| --- | --- |
+| Switcher settings | `~/.config/claude-switcher/config.json` |
+| Added Code profiles | `~/.claude-accounts/<profile-id>` |
+| Terminal launch documents | `~/Library/Application Support/Claude Switcher/Launchers` |
+| Added Desktop profiles | `~/Library/Application Support/Claude-<profile-id>` |
+
+Settings use file permissions `0600`; launcher directories and launch documents use `0700`.
+
+The installed binary provides JSON diagnostics:
+
+```sh
+APP="/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher"
+"$APP" --accounts  # Account identities and sign-in status
+"$APP" --usage     # Usage percentages and reset timestamps
+"$APP" --dry-run   # Desktop launch plans; launches nothing
+```
+
+Diagnostics can contain email addresses and local paths. Redact them before posting an issue.
+
+</details>
+
+## Compatibility
+
+Verified with **Claude Code 2.1.283** and **Claude Desktop 2.9939.2** on 27 September 2026. Account usage was checked with three independently signed-in Max accounts.
+
+The credential-directory selector, structured usage request, and Desktop profile internals are undocumented Claude behavior. Claude updates may require changes here. Desktop usage comes from local history and has estimated reset times; the main menu reads current account usage through the CLI.
+
+## Development
 
 ```sh
 swift test
 swift build -c release
-VERSION=0.6.4 CODESIGN_IDENTITY=- scripts/bundle.sh
+CODESIGN_IDENTITY=- scripts/bundle.sh
 ```
 
-The local build is ad-hoc signed for this Mac. It is not a notarized distribution build.
-`BIN_DIR` can point the bundle script at a separate release build directory.
+The current suite has 283 passing tests covering account isolation, identity mismatches, usage parsing, timeouts, and Desktop profile handling. See [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout and contribution notes.
 
-```sh
-claude-switcher --accounts  # JSON with account identity and matching status; no tokens
-claude-switcher --usage     # Verified usage percentages and exact reset timestamps; no tokens
-claude-switcher --dry-run   # Desktop launch plans; launches nothing
-```
+## Credits and license
 
-Configuration: `~/.config/claude-switcher/config.json` (mode 0600).
-Terminal launch documents: `~/Library/Application Support/Claude Switcher/Launchers` (mode 0700).
-New account data: `~/.claude-accounts/<profile-id>` and
-`~/Library/Application Support/Claude-<profile-id>`.
+Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau’s Claude Switcher](https://github.com/kevinchau/claude-switcher), with its original history and attribution preserved.
 
-The credential selector, structured usage request and Desktop profile internals are undocumented Claude behavior.
-They were checked against Claude Code 2.1.283 and Claude Desktop 2.9939.2 on 27 September 2026.
-Regression tests cover isolation, email mismatches, signed-out accounts, timeout handling and safe login commands.
-
-See the [upstream documentation](https://github.com/kevinchau/claude-switcher/blob/v0.6.0/README.md)
-for the original Desktop profile implementation and update handling. Its terminal-sharing instructions differ from this build.
+This fork adds isolated Claude Code accounts, verified email labels, and compact live usage gauges. Licensed under [MIT](LICENSE). Not affiliated with Anthropic.
