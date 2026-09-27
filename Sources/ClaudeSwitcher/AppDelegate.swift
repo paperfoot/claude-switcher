@@ -13,11 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var configError: String?
     private var running: [RunningInstance] = []
 
-    /// profile id -> terminal CLI sign-in, from the most recent background Keychain
-    /// existence probe. A missing entry renders as "terminal: unknown"; the menu never
-    /// blocks waiting for one.
-    private var signInStates: [String: Bool] = [:]
+    /// Account identity comes from the same isolated environment used to open Code.
+    private var accountStatuses: [String: AccountStatus] = [:]
     private var isProbingSignIn = false
+    private var lastAccountCheck: Date = .distantPast
+    private var isOpeningTerminal = false
 
     /// profile id -> the usage Claude Desktop last recorded for that profile, read from its
     /// own `plan-usage-history.json` when the menu opens. Read-only; never fetched.
@@ -45,7 +45,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isBusy = false
     private var launchGeneration = 0
     private var isMenuOpen = false
-    private var didWarnAboutMissingCLI = false
 
     /// A downloaded Claude update whose installer is waiting on the running instances, as of
     /// the last time the menu opened.
@@ -89,7 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 button.title = "Claude"
             }
-            button.toolTip = "Claude Switcher"
+            button.toolTip = "Claude accounts"
+            button.setAccessibilityLabel("Claude accounts")
         }
 
         let menu = NSMenu()
@@ -114,13 +114,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         refreshSignInStates()
-        checkCLIAvailability()
-        promptForClaudeAppIfMissing()
         reconcileUpdateBlock()
         outsideTriggerForReopen()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        statusItem?.button?.performClick(nil)
+        return false
+    }
 
     // MARK: - NSMenuDelegate
 
@@ -160,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let input = MenuBuilder.Input(
             config: config,
             running: running,
-            signInStates: signInStates,
+            accountStatuses: accountStatuses,
             isBusy: isBusy,
             configError: configError,
             claudeAppExists: FileManager.default.fileExists(atPath: PathNormalizer.normalize(config.claudeAppPath)),
@@ -190,7 +193,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func reloadConfig() {
         do {
-            config = try Config.load()
+            let loaded = try Config.load()
+            if loaded.profiles != config.profiles {
+                accountStatuses = [:]
+                lastAccountCheck = .distantPast
+            }
+            config = loaded
             configError = nil
         } catch {
             // Keep the last good config so a hand-edit typo cannot empty the menu.
@@ -215,63 +223,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Background probes
 
-    /// Keychain existence checks shell out, so they run off the main thread and are cached
-    /// for the menu to read. Existence only: no secret is ever read.
-    private func refreshSignInStates() {
-        guard !isProbingSignIn else { return }
+    /// A menu open starts at most one bounded background check per fifteen seconds.
+    private func refreshSignInStates(force: Bool = false) {
+        guard !isProbingSignIn, force || Date().timeIntervalSince(lastAccountCheck) >= 15 else { return }
         isProbingSignIn = true
-        let queries = config.profiles.map { Diagnostics.ProfileQuery(id: $0.id, credDir: $0.credDir) }
+        let profiles = config.profiles
+        let executable = Diagnostics.locateOnSearchPath("claude")
         Task.detached(priority: .utility) {
-            var states: [String: Bool] = [:]
-            for query in queries {
-                states[query.id] = KeychainProbe.isSignedIn(credDir: query.credDir)
+            let states = await withTaskGroup(of: (String, AccountStatus).self) { group in
+                for profile in profiles {
+                    group.addTask {
+                        (profile.id, AccountStatusReader.read(profile: profile, executable: executable))
+                    }
+                }
+                var result: [String: AccountStatus] = [:]
+                for await (id, status) in group { result[id] = status }
+                return result
             }
-            // Bind an immutable copy before the actor hop: capturing the mutable `var`
-            // is rejected under the Swift 6 language mode this package uses.
-            let snapshot = states
-            await MainActor.run { self.applySignInStates(snapshot) }
+            await self.applyAccountStatuses(states, profiles: profiles)
         }
     }
 
-    private func applySignInStates(_ states: [String: Bool]) {
+    private func applyAccountStatuses(_ states: [String: AccountStatus], profiles: [Profile]) {
         isProbingSignIn = false
-        mergeSignInStates(states)
-    }
-
-    private func mergeSignInStates(_ states: [String: Bool]) {
-        guard states != signInStates else { return }
-        signInStates = states
-        // Update hints in place rather than rebuilding a menu the user is pointing at.
+        // Ignore results for profiles edited or removed while the commands were running.
+        guard profiles == config.profiles else {
+            refreshSignInStates(force: true)
+            return
+        }
+        lastAccountCheck = Date()
+        accountStatuses = states
         if isMenuOpen, let menu = statusItem?.menu {
-            MenuBuilder.updateHints(in: menu, config: config, signInStates: signInStates)
+            MenuBuilder.updateAccounts(in: menu, config: config, statuses: states)
         }
-    }
-
-    /// Resolves the claude CLI two ways and warns once per run if neither is present.
-    /// Note: the Desktop Code tab runs the app-managed sidecar under
-    /// ~/Library/Application Support/Claude/claude-code/<version>/..., NOT the PATH binary;
-    /// the PATH binary is what "Copy terminal command" drives. Startup never blocks on this.
-    private func checkCLIAvailability() {
-        Task.detached(priority: .utility) {
-            let probe = Diagnostics.probeCLI()
-            await MainActor.run { self.handleCLIProbe(probe) }
-        }
-    }
-
-    private func handleCLIProbe(_ probe: Diagnostics.CLIProbe) {
-        guard !probe.isResolved, !didWarnAboutMissingCLI else { return }
-        didWarnAboutMissingCLI = true
-        presentAlert(
-            style: .informational,
-            title: "Claude CLI not found",
-            message: """
-            No claude binary was found on your PATH, and no app-managed sidecar was found under \
-            ~/Library/Application Support/Claude/claude-code.
-
-            Switching Claude Desktop profiles still works \u{2014} that only needs Claude.app. The \
-            copied terminal commands will not run until the claude CLI is installed.
-            """
-        )
     }
 
     // MARK: - Actions: profiles
@@ -395,19 +379,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openTerminal(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
-              let profile = config.profile(id: id) else { return }
-        let home = NSHomeDirectory()
-        let candidates = ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude",
-                          "\(home)/.npm-global/bin/claude", "/usr/local/bin/claude"]
-        guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+              let profile = config.profile(id: id), !isOpeningTerminal else { return }
+        guard let executable = Diagnostics.locateOnSearchPath("claude") else {
             presentAlert(style: .warning, title: "Claude Code was not found",
-                         message: "Install Claude Code, then use Open Claude Code again.")
+                         message: "Install Claude Code, then open this account again.")
             return
         }
+        isOpeningTerminal = true
+        Task {
+            // Recheck on click: a login may have changed since the menu was opened.
+            let status = await Task.detached(priority: .userInitiated) {
+                AccountStatusReader.read(profile: profile, executable: executable)
+            }.value
+            isOpeningTerminal = false
+            guard config.profile(id: profile.id) == profile else { return }
+            accountStatuses[profile.id] = status
+            lastAccountCheck = .distantPast
+            if case .unavailable = status {
+                presentAlert(style: .warning, title: "Could not check this account",
+                             message: "Claude Code did not return an account status. Try again or open Settings → Diagnostics.")
+                return
+            }
+            launchTerminal(profile: profile, executable: executable, signIn: !status.matches(profile.expectedEmail))
+        }
+    }
+
+    private func launchTerminal(profile: Profile, executable: String, signIn: Bool) {
         do {
-            let directory = URL(fileURLWithPath: home)
+            let directory = URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("Library/Application Support/Claude Switcher/Launchers", isDirectory: true)
-            let script = try TerminalLauncher.write(profile: profile, executable: executable, directory: directory)
+            let script = try TerminalLauncher.write(profile: profile, executable: executable,
+                                                   directory: directory, signIn: signIn)
             let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
             NSWorkspace.shared.open([script], withApplicationAt: terminal,
                                     configuration: NSWorkspace.OpenConfiguration()) { _, error in
@@ -433,19 +435,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func addProfile(_ sender: NSMenuItem) {
         let alert = NSAlert()
-        alert.messageText = "Add a profile"
-        alert.informativeText = """
-        A profile is a separate Claude Desktop login \u{2014} its own account for both chat and the \
-        Code tab \u{2014} that runs alongside your other profiles.
-
-        Desktop Code keeps using your shared ~/.claude. Terminal Claude Code has separate \
-        credentials, settings and history for each profile.
-
-        Claude opens on this profile as soon as you add it, so you can sign in to the account \
-        you want to use. Claude Switcher never handles your credentials.
-        """
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.placeholderString = "Work"
+        alert.messageText = "Add account"
+        alert.informativeText = "Enter the email you use for Claude."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.placeholderString = "you@example.com"
         alert.accessoryView = field
         alert.addButton(withTitle: "Add")
         alert.addButton(withTitle: "Cancel")
@@ -453,7 +446,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         guard runModal(alert) == .alertFirstButtonReturn else { return }
         let label = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !label.isEmpty else { return }
+        guard label.contains("@"), !label.contains(where: { $0.isWhitespace }) else {
+            presentAlert(style: .warning, title: "Enter an email address", message: "Use the email for your Claude account.")
+            return
+        }
+        guard !config.profiles.contains(where: { $0.expectedEmail?.caseInsensitiveCompare(label) == .orderedSame }) else {
+            presentAlert(style: .informational, title: "Account already added", message: "Choose it from the menu to open Claude Code.")
+            return
+        }
 
         let slug = uniqueSlug(for: label)
         let home = NSHomeDirectory()
@@ -461,7 +461,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             id: slug,
             label: label,
             userDataDir: PathNormalizer.normalize("\(home)/Library/Application Support/Claude-\(slug)"),
-            credDir: PathNormalizer.normalize("\(home)/.claude-accounts/\(slug)")
+            credDir: PathNormalizer.normalize("\(home)/.claude-accounts/\(slug)"),
+            expectedEmail: label
         )
 
         let previousConfig = config
@@ -479,12 +480,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Before its first launch, so the new profile's updater never starts either.
             _ = try? UpdateBlock.apply(userDataDir: profile.userDataDir)
         }
-        refreshSignInStates()
-        running = InstanceManager.runningInstances(appPath: config.claudeAppPath)
-
-        // Launch it right away: a brand-new profile has no login yet, so this puts the user
-        // straight on its sign-in screen. That is the whole point of adding one.
-        beginLaunch(profile)
+        accountStatuses[profile.id] = .signedOut
+        lastAccountCheck = .distantPast
+        let item = NSMenuItem()
+        item.representedObject = profile.id
+        openTerminal(item)
     }
 
     /// Label only. The id and both directories are the profile's identity and never change.
@@ -494,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let alert = NSAlert()
         alert.messageText = "Rename \u{201C}\(profile.label)\u{201D}"
-        alert.informativeText = "Only the name in the menu changes. The profile keeps its directories, its sign-ins and its id (\(profile.id))."
+        alert.informativeText = "Claude Code continues to show the signed-in email."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = profile.label
         field.placeholderString = profile.label
@@ -551,7 +551,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         saveConfig(failureTitle: "Could not save the change")
-        signInStates.removeValue(forKey: id)
+        accountStatuses.removeValue(forKey: id)
         usage.removeValue(forKey: id)
         // Ours to clean up — and only if it is still exactly ours. Everything else stays.
         _ = try? UpdateBlock.remove(userDataDir: profile.userDataDir)
@@ -965,7 +965,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let probe = await Task.detached(priority: .userInitiated) {
                 Diagnostics.probe(appPath: appPath, profiles: queries)
             }.value
-            self.mergeSignInStates(probe.signedIn)
+            self.refreshSignInStates(force: true)
             self.presentDiagnostics(Diagnostics.report(config: self.config, running: self.running, probe: probe))
         }
     }

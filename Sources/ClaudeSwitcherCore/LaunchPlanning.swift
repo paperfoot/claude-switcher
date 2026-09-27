@@ -87,6 +87,17 @@ public enum LaunchPlanning {
         return parts.joined(separator: " ")
     }
 
+    public static func terminalEnvironment(for profile: Profile, inheriting environment: [String: String]) -> [String: String] {
+        var result = environment
+        for key in accountEnvironmentKeys { result.removeValue(forKey: key) }
+        if let directory = profile.credDir, !directory.isEmpty {
+            let normalized = PathNormalizer.normalize(directory)
+            result["CLAUDE_CONFIG_DIR"] = normalized
+            result["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = normalized
+        }
+        return result
+    }
+
     /// Double-quotes a value, escaping the characters the shell still expands inside quotes.
     public static func shellQuoted(_ value: String) -> String {
         var escaped = ""

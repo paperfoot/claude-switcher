@@ -1,47 +1,59 @@
 import AppKit
 import ClaudeSwitcherCore
 
-// claude-switcher — a menu bar switcher for multiple Claude Desktop accounts.
-//
-// Mechanism (empirically verified, do not re-derive):
-//   * A Claude Desktop "account" is an Electron user-data dir. Passing
-//     --user-data-dir=<dir> gives a separate login for BOTH chat and the Code tab.
-//   * Claude.app takes no single-instance lock, so several profiles run concurrently:
-//     switching is launching or focusing another instance, never quitting or logging out.
-//     (The one time Claude is asked to quit is the explicit, confirmed "Quit All & Install
-//     Update…" action — its installer cannot run while any instance is up.)
-//   * ~/.claude (projects, history, skills, agents, plugins, memory, settings, CLAUDE.md)
-//     is resolved as CLAUDE_CONFIG_DIR ?? ~/.claude, independently of --user-data-dir.
-//     Desktop launches leave CLAUDE_CONFIG_DIR untouched: keeping ~/.claude shared across
-//     every account is the entire point of the product.
-//   * CLAUDE_SECURESTORAGE_CONFIG_DIR is for the TERMINAL claude CLI only. It selects a
-//     separate credential slot while still sharing ~/.claude, and is never passed to the app.
-
 private let usageText = """
-claude-switcher — switch between Claude Desktop accounts from the menu bar.
+claude-switcher — open Claude accounts from the menu bar.
 
 USAGE
-  claude-switcher             Run the menu bar app (no Dock icon, no window).
-  claude-switcher --dry-run   Print the resolved launch plan for every profile, then exit.
-                              Launches nothing, creates no directories, touches no state.
+  claude-switcher             Run the menu bar app.
+  claude-switcher --accounts  Print verified Claude Code account summaries as JSON.
+  claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
+
+Click an email to open Claude Code. A Sign in badge means that account needs a login.
+Desktop profiles and their local usage history are available in the Desktop submenu.
+Desktop and terminal sign-ins are separate.
 
 CONFIG
   \(Config.configURL.path)
-
-HOW PROFILES DIFFER
-  Desktop app   a separate Electron user-data dir (--user-data-dir) — its own login for
-                both chat and the Code tab. Instances run side by side.
-  Terminal CLI  a separate CLAUDE_SECURESTORAGE_CONFIG_DIR credential slot, applied by
-                you in your shell via "Copy terminal command".
-
-WHAT STAYS SHARED
-  ~/.claude — projects, session history, skills, agents, plugins, memory, settings and
-  CLAUDE.md — is shared by Desktop profiles. Terminal profiles have separate config directories,
-  never sets CLAUDE_CODE_OAUTH_TOKEN, and never reads or writes Keychain secrets (it only
-  checks whether a credential item exists). Usage shown per profile is read from that
-  profile's own plan-usage-history.json, which Claude Desktop writes; it is never fetched.
 """
+
+private func readAccounts(_ config: Config) -> [String: AccountStatus] {
+    let executable = Diagnostics.locateOnSearchPath("claude")
+    return Dictionary(uniqueKeysWithValues: config.profiles.map {
+        ($0.id, AccountStatusReader.read(profile: $0, executable: executable))
+    })
+}
+
+/// Emit only identity fields from the official CLI, never its raw output.
+private func runAccounts() -> Int32 {
+    do {
+        let config = try Config.load()
+        let statuses = readAccounts(config)
+        let rows: [[String: Any]] = config.profiles.map { profile in
+            let status = statuses[profile.id] ?? .unavailable
+            let presentation = AccountPresentation(profile: profile, status: status)
+            var row: [String: Any] = ["id": profile.id, "title": presentation.title,
+                                       "matchesExpectedAccount": status.matches(profile.expectedEmail)]
+            row["expectedEmail"] = profile.expectedEmail
+            row["email"] = status.email
+            row["badge"] = presentation.badge
+            switch status {
+            case .signedIn(_, let plan): row["state"] = "signedIn"; row["plan"] = plan
+            case .signedOut: row["state"] = "signedOut"
+            case .unavailable: row["state"] = "unavailable"
+            }
+            return row
+        }
+        let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+        FileHandle.standardOutput.write(data)
+        print()
+        return 0
+    } catch {
+        FileHandle.standardError.write(Data("Could not read accounts: \(error.localizedDescription)\n".utf8))
+        return 1
+    }
+}
 
 /// Prints the launch plan without touching anything. Returns the process exit code.
 private func runDryRun() -> Int32 {
@@ -81,6 +93,10 @@ let commandLineArguments = CommandLine.arguments.dropFirst()
 if commandLineArguments.contains("--help") || commandLineArguments.contains("-h") {
     print(usageText)
     exit(0)
+}
+
+if commandLineArguments.contains("--accounts") {
+    exit(runAccounts())
 }
 
 if commandLineArguments.contains("--dry-run") {

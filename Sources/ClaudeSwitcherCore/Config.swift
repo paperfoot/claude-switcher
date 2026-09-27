@@ -13,8 +13,8 @@ import Foundation
 ///   CLI via `CLAUDE_SECURESTORAGE_CONFIG_DIR`. `nil` means the default slot —
 ///   the variable is omitted entirely, never passed as an empty string.
 ///
-/// `~/.claude` is intentionally never redirected: projects, history, skills,
-/// agents, plugins, memory and settings stay shared across every profile.
+/// Desktop profiles keep the default local Code data. Terminal profiles isolate
+/// settings and account metadata alongside credentials.
 public struct Profile: Codable, Equatable, Identifiable, Sendable {
     /// Stable, unique, non-empty identifier. Also the key used by
     /// ``Config/activeProfileId``.
@@ -22,6 +22,9 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
 
     /// Human readable name shown in the menu.
     public var label: String
+
+    /// Intended Claude Code account. Used for login hints and mismatch detection.
+    public var expectedEmail: String?
 
     /// Electron user-data directory, or `nil` for the app's default profile.
     public var userDataDir: String?
@@ -33,15 +36,16 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
     /// out-of-the-box account. The default profile can never be removed.
     public var isDefaultProfile: Bool { userDataDir == nil && credDir == nil }
 
-    public init(id: String, label: String, userDataDir: String? = nil, credDir: String? = nil) {
+    public init(id: String, label: String, userDataDir: String? = nil, credDir: String? = nil, expectedEmail: String? = nil) {
         self.id = id
         self.label = label
         self.userDataDir = userDataDir
         self.credDir = credDir
+        self.expectedEmail = expectedEmail
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, userDataDir, credDir
+        case id, label, userDataDir, credDir, expectedEmail
     }
 
     /// Tolerant decoding: hand-edited config files may omit `userDataDir` or
@@ -51,6 +55,7 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(String.self, forKey: .id)
         self.label = try container.decode(String.self, forKey: .label)
+        self.expectedEmail = Profile.emptyAsNil(try container.decodeIfPresent(String.self, forKey: .expectedEmail))
         self.userDataDir = Profile.emptyAsNil(try container.decodeIfPresent(String.self, forKey: .userDataDir))
         self.credDir = Profile.emptyAsNil(try container.decodeIfPresent(String.self, forKey: .credDir))
     }
@@ -61,6 +66,7 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(label, forKey: .label)
+        try container.encodeIfPresent(expectedEmail, forKey: .expectedEmail)
         try container.encode(userDataDir, forKey: .userDataDir)
         try container.encode(credDir, forKey: .credDir)
     }
