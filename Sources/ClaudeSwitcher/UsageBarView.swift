@@ -14,6 +14,7 @@ final class UsageBarView: NSView {
         let percent: Int?
         let level: UsageLevel
         let trailing: String?
+        var isCached: Bool = false
     }
 
     /// Where item titles start in a menu with a state column, so the rows line up with the
@@ -26,12 +27,17 @@ final class UsageBarView: NSView {
     private static let barHeight: CGFloat = 9
     private static let percentWidth: CGFloat = 36
 
-    private let rows: [Row]
+    private(set) var rows: [Row]
 
     init(rows: [Row], width: CGFloat = 300) {
         self.rows = rows
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: CGFloat(rows.count) * Self.rowHeight + 6))
         autoresizingMask = [.width]
+    }
+
+    func update(rows: [Row]) {
+        self.rows = rows
+        needsDisplay = true
     }
 
     @available(*, unavailable)
@@ -47,7 +53,7 @@ final class UsageBarView: NSView {
 
         // Rows are laid out top-down; AppKit's origin is bottom-left.
         for (index, row) in rows.enumerated() {
-            let tint = row.percent == nil ? NSColor.secondaryLabelColor : Self.color(for: row.level)
+            let tint = row.percent == nil || row.isCached ? NSColor.secondaryLabelColor : Self.color(for: row.level)
             let number: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: tint]
             let top = bounds.height - 3 - CGFloat(index + 1) * Self.rowHeight
             let baseline = top + (Self.rowHeight - font.capHeight) / 2 - 1

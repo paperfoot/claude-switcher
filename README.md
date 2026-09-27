@@ -52,7 +52,9 @@ A **Sign in** badge means that profile needs authentication. If Claude reports a
 
 The switcher asks the installed Claude Code CLI for account identity and usage. Claude handles authentication and token refresh; the switcher does not read or copy tokens.
 
-Usage checks send no model prompt. Tools, hooks, MCP servers, and transcript scanning are disabled for those checks. They run in the background, with a five-minute cache and no recurring polling timer. Failed requests back off for fifteen minutes; stale or expired readings become unknown until refreshed.
+Usage checks send no model prompt. Tools, hooks, MCP servers, and transcript scanning are disabled for those checks. Readings refresh in the background every five minutes, at a known reset, and when due after your Mac wakes. Failed requests back off for fifteen minutes.
+
+The last reading appears immediately, including after restarting the app. Older readings stay visible in gray with a **cached** label while refreshing; a passed reset is marked **Previous · reset passed** until Claude returns the new window. Cached readings expire after seven days and are cleared when sign-out or a different account is detected.
 
 New Code profiles set both `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` to their own directory. Inherited authentication and provider overrides are cleared before checking or opening an account. Your default Claude data stays in place.
 
@@ -62,11 +64,12 @@ New Code profiles set both `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_
 | Data | Location |
 | --- | --- |
 | Switcher settings | `~/.config/claude-switcher/config.json` |
+| Cached usage | `~/.config/claude-switcher/usage-cache.json` |
 | Added Code profiles | `~/.claude-accounts/<profile-id>` |
 | Terminal launch documents | `~/Library/Application Support/Claude Switcher/Launchers` |
 | Added Desktop profiles | `~/Library/Application Support/Claude-<profile-id>` |
 
-Settings use file permissions `0600`; launcher directories and launch documents use `0700`.
+Settings and cached usage use file permissions `0600`; launcher directories and launch documents use `0700`.
 
 The installed binary provides JSON diagnostics:
 
@@ -95,7 +98,7 @@ swift build -c release
 CODESIGN_IDENTITY=- scripts/bundle.sh
 ```
 
-The current suite has 283 passing tests covering account isolation, identity mismatches, usage parsing, timeouts, and Desktop profile handling. See [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout and contribution notes.
+The current suite has 292 passing tests covering account isolation, identity mismatches, usage parsing, timeouts, and Desktop profile handling. See [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout and contribution notes.
 
 ## Credits and license
 

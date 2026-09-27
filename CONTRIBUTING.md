@@ -17,7 +17,7 @@ Use disposable profiles for account and launch testing. Do not exercise sign-in 
 - `Tests/ClaudeSwitcherTests/`: fixtures and tests for the core library.
 - `scripts/`: app bundling, signing, disk images, and notarization.
 
-Keep the main menu short. Account identity must come from Claude Code, and usage must belong to the displayed account. Unknown or expired usage must never appear as a fresh zero.
+Keep the main menu short. Account identity must come from Claude Code, and usage must belong to the displayed account. Unknown or expired usage must never appear as a fresh zero. Cached values must be labeled, and passed resets must be shown as previous usage.
 
 ## Local build
 

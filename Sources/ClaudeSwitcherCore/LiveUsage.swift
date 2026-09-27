@@ -60,8 +60,14 @@ public enum LiveUsageError: Error, Equatable, Sendable {
 
 public enum LiveUsagePolicy {
     public static let refreshInterval: TimeInterval = 300
-    public static let staleInterval: TimeInterval = 900
+    public static let cacheLifetime: TimeInterval = 7 * 24 * 60 * 60
     public static let failureBackoff: TimeInterval = 900
+
+    public static func nextRefresh(for snapshot: LiveUsageSnapshot, now: Date) -> Date {
+        let reset = [snapshot.fiveHour?.resetsAt, snapshot.sevenDay?.resetsAt]
+            .compactMap { $0 }.filter { $0 > now }.min() ?? .distantFuture
+        return min(snapshot.fetchedAt.addingTimeInterval(refreshInterval), reset)
+    }
 }
 
 /// Uses Claude Code's structured /usage control request. No model prompt, token access,
@@ -89,6 +95,7 @@ public enum LiveUsageReader {
                             baseEnvironment: [String: String] = ProcessInfo.processInfo.environment) throws -> LiveUsageSnapshot {
         guard let executable else { throw LiveUsageError.unavailable }
         let before = AccountStatusReader.read(profile: profile, executable: executable, baseEnvironment: baseEnvironment)
+        guard before != .unavailable else { throw LiveUsageError.unavailable }
         guard before.matches(email) else { throw LiveUsageError.accountMismatch }
         let fm = FileManager.default
         let directory = fm.temporaryDirectory.appendingPathComponent("claude-usage-\(UUID().uuidString)", isDirectory: true)
@@ -144,6 +151,7 @@ public enum LiveUsageReader {
         }
         guard process.terminationStatus == 0 else { throw LiveUsageError.unavailable }
         let after = AccountStatusReader.read(profile: profile, executable: executable, baseEnvironment: baseEnvironment)
+        guard after != .unavailable else { throw LiveUsageError.unavailable }
         guard after.matches(email) else { throw LiveUsageError.accountMismatch }
         return try decodeResponse(Data(contentsOf: outputURL), email: email, now: Date())
     }

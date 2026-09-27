@@ -167,24 +167,27 @@ enum MenuBuilder {
     private static func liveUsageItem(profile: Profile, status: AccountStatus?, snapshot: LiveUsageSnapshot?,
                                       failed: Bool, now: Date) -> NSMenuItem {
         let matches = status?.matches(profile.expectedEmail) == true
-        let valid = snapshot.flatMap { reading in
-            matches && reading.email.caseInsensitiveCompare(status?.email ?? "") == .orderedSame &&
-            now.timeIntervalSince(reading.fetchedAt) >= 0 && now.timeIntervalSince(reading.fetchedAt) < LiveUsagePolicy.staleInterval
-                ? reading : nil
-        }
+        let presentation = LiveUsagePresentation(profile: profile, status: status, snapshot: snapshot, failed: failed, now: now)
+        let valid = presentation.snapshot
         let rows = [("5h", valid?.fiveHour), ("Week", valid?.sevenDay)].map { label, window in
-            let percent = window?.displayedPercent(at: now)
-            let trailing: String?
-            if let reset = window?.resetsAt {
-                trailing = reset > now ? "resets \(clock(reset, now: now))" : "Refreshing…"
+            let expired = window?.resetsAt.map { $0 <= now } ?? false
+            // Keep a passed window's last value, explicitly marked as previous usage.
+            let percent = window.flatMap { $0.percent.isFinite ? Int(min(100, max(0, $0.percent)).rounded()) : nil }
+            var trailing: String
+            if expired {
+                trailing = "Previous · reset passed"
+            } else if let reset = window?.resetsAt {
+                trailing = "resets \(clock(reset, now: now))"
             } else if window?.percent == 0 {
                 trailing = "Not started"
             } else if window != nil {
                 trailing = "Reset unknown"
             } else {
-                trailing = !matches ? nil : (failed || snapshot != nil ? "Unavailable" : "Loading…")
+                trailing = status == .signedOut ? "Sign in" : (failed ? "Retrying…" : (matches || status == nil ? "Loading…" : "Checking account…"))
             }
-            return UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0), trailing: trailing)
+            if presentation.isCached && window != nil && !expired { trailing += " · cached" }
+            return UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0),
+                                    trailing: trailing, isCached: presentation.isCached || expired)
         }
         let view = UsageBarView(rows: rows, width: 300)
         let details = rows.map { "\($0.label): \($0.percent.map { "\($0)% used" } ?? "unavailable"), \($0.trailing ?? "sign in first")" }.joined(separator: ". ")
@@ -204,7 +207,12 @@ enum MenuBuilder {
                                         failed: failures.contains(profile.id), now: Date())
             guard let existing = menu.items.first(where: { $0.identifier == updated.identifier }) else { continue }
             existing.title = updated.title
-            existing.view = updated.view
+            if let current = existing.view as? UsageBarView, let replacement = updated.view as? UsageBarView {
+                current.update(rows: replacement.rows)
+                current.toolTip = replacement.toolTip
+            } else {
+                existing.view = updated.view
+            }
         }
     }
 
