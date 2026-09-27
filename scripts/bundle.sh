@@ -33,7 +33,7 @@ CONTENTS="$APP_DIR/Contents"
 
 # Ask SwiftPM where the release products actually live; fall back to the
 # conventional path if the query fails (e.g. no toolchain on PATH).
-BIN_DIR="$(swift build -c release --show-bin-path 2>/dev/null | tail -n 1 || true)"
+BIN_DIR="${BIN_DIR:-$(swift build -c release --show-bin-path 2>/dev/null | tail -n 1 || true)}"
 if [[ -z "${BIN_DIR:-}" || ! -d "$BIN_DIR" ]]; then
   BIN_DIR="$ROOT/.build/release"
 fi
@@ -117,7 +117,7 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
     | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)"
 fi
 
-if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+if [[ -n "${CODESIGN_IDENTITY:-}" && "$CODESIGN_IDENTITY" != "-" ]]; then
   echo "==> Signing with: $CODESIGN_IDENTITY"
   # --options runtime (hardened runtime) and a secure timestamp are both
   # prerequisites for notarization; neither is possible with an ad-hoc signature.
