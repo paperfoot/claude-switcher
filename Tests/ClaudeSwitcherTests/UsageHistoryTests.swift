@@ -312,11 +312,13 @@ final class UsageHistoryTests: XCTestCase {
         XCTAssertEqual(reading.rows.count, 1)
     }
 
-    func testLevelThresholdsAreEightyAndOneHundred() {
+    func testLevelThresholdsWarnBeforeReachingTheLimit() {
         XCTAssertEqual(UsageLevel.of(0), .normal)
-        XCTAssertEqual(UsageLevel.of(79), .normal)
-        XCTAssertEqual(UsageLevel.of(80), .warning)
-        XCTAssertEqual(UsageLevel.of(99), .warning)
+        XCTAssertEqual(UsageLevel.of(69), .normal)
+        XCTAssertEqual(UsageLevel.of(70), .warning)
+        XCTAssertEqual(UsageLevel.of(89), .warning)
+        XCTAssertEqual(UsageLevel.of(90), .critical)
+        XCTAssertEqual(UsageLevel.of(99), .critical)
         XCTAssertEqual(UsageLevel.of(100), .limit)
     }
 
