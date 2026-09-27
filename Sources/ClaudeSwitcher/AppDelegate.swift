@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isProbingSignIn = false
     private var lastAccountCheck: Date = .distantPast
     private var isOpeningTerminal = false
+    private var liveUsage: [String: LiveUsageSnapshot] = [:]
+    private var usageFailures: Set<String> = []
+    private var nextUsageRefresh: [String: Date] = [:]
+    private var isFetchingUsage = false
 
     /// profile id -> the usage Claude Desktop last recorded for that profile, read from its
     /// own `plan-usage-history.json` when the menu opens. Read-only; never fetched.
@@ -135,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         blockedUpdate = UpdateProbe.status(appPath: config.claudeAppPath).blocked
         usage = Self.readUsage(for: config.profiles)
         refreshSignInStates()
+        refreshLiveUsage()
         rebuild(menu)
     }
 
@@ -164,6 +169,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             config: config,
             running: running,
             accountStatuses: accountStatuses,
+            liveUsage: liveUsage,
+            usageFailures: usageFailures,
             isBusy: isBusy,
             configError: configError,
             claudeAppExists: FileManager.default.fileExists(atPath: PathNormalizer.normalize(config.claudeAppPath)),
@@ -196,6 +203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let loaded = try Config.load()
             if loaded.profiles != config.profiles {
                 accountStatuses = [:]
+                liveUsage = [:]
+                usageFailures = []
+                nextUsageRefresh = [:]
                 lastAccountCheck = .distantPast
             }
             config = loaded
@@ -253,9 +263,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         lastAccountCheck = Date()
         accountStatuses = states
+        for profile in profiles where !states[profile.id, default: .unavailable].matches(profile.expectedEmail) {
+            liveUsage[profile.id] = nil
+            nextUsageRefresh[profile.id] = nil
+        }
         if isMenuOpen, let menu = statusItem?.menu {
             MenuBuilder.updateAccounts(in: menu, config: config, statuses: states)
+            updateUsageRows(menu)
         }
+        refreshLiveUsage()
+    }
+
+    private func refreshLiveUsage() {
+        guard !isFetchingUsage else { return }
+        let now = Date()
+        let pending = config.profiles.compactMap { profile -> (Profile, String)? in
+            guard let status = accountStatuses[profile.id], status.matches(profile.expectedEmail),
+                  let email = status.email, now >= nextUsageRefresh[profile.id, default: .distantPast] else { return nil }
+            return (profile, email)
+        }
+        guard !pending.isEmpty else { return }
+        isFetchingUsage = true
+        let executable = Diagnostics.locateOnSearchPath("claude")
+        Task.detached(priority: .utility) {
+            await withTaskGroup(of: (Profile, Result<LiveUsageSnapshot, LiveUsageError>).self) { group in
+                for (profile, email) in pending {
+                    group.addTask {
+                        do { return (profile, .success(try LiveUsageReader.read(profile: profile, email: email, executable: executable))) }
+                        catch let error as LiveUsageError { return (profile, .failure(error)) }
+                        catch { return (profile, .failure(.unavailable)) }
+                    }
+                }
+                for await (profile, result) in group {
+                    await self.applyLiveUsage(result, profile: profile)
+                }
+            }
+            await MainActor.run { self.isFetchingUsage = false }
+        }
+    }
+
+    private func applyLiveUsage(_ result: Result<LiveUsageSnapshot, LiveUsageError>, profile: Profile) {
+        guard config.profile(id: profile.id) == profile else { return }
+        switch result {
+        case .success(let snapshot):
+            guard accountStatuses[profile.id]?.email?.caseInsensitiveCompare(snapshot.email) == .orderedSame else { return }
+            liveUsage[profile.id] = snapshot
+            usageFailures.remove(profile.id)
+            let now = Date()
+            let nextReset = [snapshot.fiveHour?.resetsAt, snapshot.sevenDay?.resetsAt]
+                .compactMap { $0 }.filter { $0 > now }.min() ?? .distantFuture
+            nextUsageRefresh[profile.id] = min(now.addingTimeInterval(LiveUsagePolicy.refreshInterval), nextReset)
+        case .failure(let error):
+            usageFailures.insert(profile.id)
+            if case .accountMismatch = error { liveUsage[profile.id] = nil }
+            nextUsageRefresh[profile.id] = Date().addingTimeInterval(LiveUsagePolicy.failureBackoff)
+        }
+        if isMenuOpen, let menu = statusItem?.menu { updateUsageRows(menu) }
+    }
+
+    private func updateUsageRows(_ menu: NSMenu) {
+        MenuBuilder.updateLiveUsage(in: menu, config: config, statuses: accountStatuses,
+                                    snapshots: liveUsage, failures: usageFailures)
     }
 
     // MARK: - Actions: profiles

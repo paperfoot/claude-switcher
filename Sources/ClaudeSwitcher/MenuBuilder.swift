@@ -31,6 +31,8 @@ enum MenuBuilder {
         var running: [RunningInstance]
         /// Claude Code identities from the official CLI, never Desktop credentials.
         var accountStatuses: [String: AccountStatus]
+        var liveUsage: [String: LiveUsageSnapshot] = [:]
+        var usageFailures: Set<String> = []
         var isBusy: Bool
         var configError: String?
         var claudeAppExists: Bool
@@ -62,6 +64,9 @@ enum MenuBuilder {
             item.identifier = profileItemIdentifier(profile.id)
             applyAccount(to: item, profile: profile, status: input.accountStatuses[profile.id])
             menu.addItem(item)
+            menu.addItem(liveUsageItem(profile: profile, status: input.accountStatuses[profile.id],
+                                       snapshot: input.liveUsage[profile.id], failed: input.usageFailures.contains(profile.id),
+                                       now: input.now))
         }
         menu.addItem(.separator())
         menu.addItem(actionItem("Add account…", action: actions.addProfile, target: target))
@@ -158,6 +163,50 @@ enum MenuBuilder {
     }
 
     // MARK: - Usage
+
+    private static func liveUsageItem(profile: Profile, status: AccountStatus?, snapshot: LiveUsageSnapshot?,
+                                      failed: Bool, now: Date) -> NSMenuItem {
+        let matches = status?.matches(profile.expectedEmail) == true
+        let valid = snapshot.flatMap { reading in
+            matches && reading.email.caseInsensitiveCompare(status?.email ?? "") == .orderedSame &&
+            now.timeIntervalSince(reading.fetchedAt) >= 0 && now.timeIntervalSince(reading.fetchedAt) < LiveUsagePolicy.staleInterval
+                ? reading : nil
+        }
+        let rows = [("5h", valid?.fiveHour), ("Week", valid?.sevenDay)].map { label, window in
+            let percent = window?.displayedPercent(at: now)
+            let trailing: String?
+            if let reset = window?.resetsAt {
+                trailing = reset > now ? "resets \(clock(reset, now: now))" : "Refreshing…"
+            } else if window?.percent == 0 {
+                trailing = "Not started"
+            } else if window != nil {
+                trailing = "Reset unknown"
+            } else {
+                trailing = !matches ? nil : (failed || snapshot != nil ? "Unavailable" : "Loading…")
+            }
+            return UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0), trailing: trailing)
+        }
+        let view = UsageBarView(rows: rows, width: 300)
+        let details = rows.map { "\($0.label): \($0.percent.map { "\($0)% used" } ?? "unavailable"), \($0.trailing ?? "sign in first")" }.joined(separator: ". ")
+        let checked = snapshot.map { " Last checked \(clock($0.fetchedAt, now: now))." } ?? ""
+        view.toolTip = details + checked
+        view.setAccessibilityElement(false)
+        let item = informationalItem("\(profile.expectedEmail ?? status?.email ?? profile.label). \(details)\(checked)")
+        item.view = view
+        item.identifier = NSUserInterfaceItemIdentifier("claude-switcher.live-usage.\(profile.id)")
+        return item
+    }
+
+    static func updateLiveUsage(in menu: NSMenu, config: Config, statuses: [String: AccountStatus],
+                                snapshots: [String: LiveUsageSnapshot], failures: Set<String>) {
+        for profile in config.profiles {
+            let updated = liveUsageItem(profile: profile, status: statuses[profile.id], snapshot: snapshots[profile.id],
+                                        failed: failures.contains(profile.id), now: Date())
+            guard let existing = menu.items.first(where: { $0.identifier == updated.identifier }) else { continue }
+            existing.title = updated.title
+            existing.view = updated.view
+        }
+    }
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()

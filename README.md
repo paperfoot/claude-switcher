@@ -27,14 +27,20 @@ Terminal profiles set both `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_
 account directory. Inherited authentication and provider variables are cleared before checking or
 opening an account. Default Claude data stays in place.
 
-The app asks the official CLI for its account summary; it does not read or copy Keychain secrets.
-Checks run in the background, have a timeout, and are refreshed when opening the menu. There is
-no permanent account polling timer. Menu rows update in place.
+The app asks the official CLI for its account summary. Tiny battery gauges beneath each email
+show the five-hour and weekly percentage **used**, alongside the exact reset time. Usage comes
+from Claude Code's structured `/usage` request. The CLI owns authentication and refresh; the
+switcher never reads tokens. Account identity is checked before and after each usage request.
+No model prompt is sent, and hooks, tools, MCP servers and the transcript scan are disabled.
+
+Checks run in the background when the menu opens; usage is cached for five minutes. There is
+no polling timer. Failed requests back off for fifteen minutes, stale readings are hidden,
+and elapsed windows show an unknown value until refreshed. Menu rows update in place.
 
 Desktop profiles use separate Electron user-data directories. Desktop Code keeps its app-managed
 account token and the default local Code data. Desktop usage bars are read from each profile’s local
 `plan-usage-history.json` and shown only in the Desktop submenu. They are cached observations;
-reset times are estimates. Exact current usage is available in Claude.
+reset times there are estimates. The main menu uses exact account usage instead.
 
 ## Build
 
@@ -43,7 +49,7 @@ Requires macOS 14+ and Swift 6.
 ```sh
 swift test
 swift build -c release
-VERSION=0.6.2 CODESIGN_IDENTITY=- scripts/bundle.sh
+VERSION=0.6.3 CODESIGN_IDENTITY=- scripts/bundle.sh
 ```
 
 The local build is ad-hoc signed for this Mac. It is not a notarized distribution build.
@@ -51,6 +57,7 @@ The local build is ad-hoc signed for this Mac. It is not a notarized distributio
 
 ```sh
 claude-switcher --accounts  # JSON with account identity and matching status; no tokens
+claude-switcher --usage     # Verified usage percentages and exact reset timestamps; no tokens
 claude-switcher --dry-run   # Desktop launch plans; launches nothing
 ```
 
@@ -59,7 +66,7 @@ Terminal launch documents: `~/Library/Application Support/Claude Switcher/Launch
 New account data: `~/.claude-accounts/<profile-id>` and
 `~/Library/Application Support/Claude-<profile-id>`.
 
-The terminal credential selector and Desktop profile/usage internals are undocumented Claude behavior.
+The credential selector, structured usage request and Desktop profile internals are undocumented Claude behavior.
 They were checked against Claude Code 2.1.283 and Claude Desktop 2.9939.2 on 27 September 2026.
 Regression tests cover isolation, email mismatches, signed-out accounts, timeout handling and safe login commands.
 
