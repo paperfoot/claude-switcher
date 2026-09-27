@@ -1,8 +1,7 @@
 import AppKit
 import ClaudeSwitcherCore
 
-/// The usage rows drawn under a profile in the menu: a label, a bar, the percentage, and a
-/// short trailing note ("resets by 9:13 PM", "2 h ago").
+/// Compact usage rows: period, battery gauge, percentage used, and reset time.
 ///
 /// A plain frame-based view drawn in one `draw(_:)`: `NSMenu` sizes a view item from its
 /// frame and stretches it to the menu's width through the autoresizing mask. Colours are
@@ -22,9 +21,9 @@ final class UsageBarView: NSView {
     private static let titleInset: CGFloat = 21
     private static let rightInset: CGFloat = 14
     private static let rowHeight: CGFloat = 16
-    private static let labelWidth: CGFloat = 40
-    private static let barWidth: CGFloat = 90
-    private static let barHeight: CGFloat = 6
+    private static let labelWidth: CGFloat = 36
+    private static let barWidth: CGFloat = 22
+    private static let barHeight: CGFloat = 9
     private static let percentWidth: CGFloat = 36
 
     private let rows: [Row]
@@ -38,14 +37,14 @@ final class UsageBarView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Vibrancy would blend the accent colour into the menu material; keep the bars solid.
+    /// Keep the gauges and text distinct from the menu material.
     override var allowsVibrancy: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
         let font = NSFont.menuFont(ofSize: 11)
         let label: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
         let number: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
-        let note: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 10), .foregroundColor: NSColor.tertiaryLabelColor]
+        let note: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor]
 
         // Rows are laid out top-down; AppKit's origin is bottom-left.
         for (index, row) in rows.enumerated() {
@@ -57,16 +56,23 @@ final class UsageBarView: NSView {
             x += Self.labelWidth
 
             let track = NSRect(x: x, y: top + (Self.rowHeight - Self.barHeight) / 2, width: Self.barWidth, height: Self.barHeight)
-            NSColor.tertiaryLabelColor.setFill()
-            NSBezierPath(roundedRect: track, xRadius: 3, yRadius: 3).fill()
+            // A tiny battery gauge, with the percentage beside it. Fill means usage consumed.
+            NSColor.secondaryLabelColor.withAlphaComponent(0.55).setStroke()
+            let outline = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
+            outline.lineWidth = 0.8
+            outline.stroke()
+            NSColor.secondaryLabelColor.withAlphaComponent(0.55).setFill()
+            NSBezierPath(roundedRect: NSRect(x: track.maxX + 1, y: track.midY - 1.5, width: 1.5, height: 3),
+                         xRadius: 0.6, yRadius: 0.6).fill()
             if let percent = row.percent, percent > 0 {
-                let fill = NSRect(x: track.minX, y: track.minY,
-                                  width: max(Self.barHeight, track.width * CGFloat(min(percent, 100)) / 100),
-                                  height: track.height)
+                let inner = track.insetBy(dx: 1.5, dy: 1.5)
+                let fill = NSRect(x: inner.minX, y: inner.minY,
+                                  width: max(1, inner.width * CGFloat(min(percent, 100)) / 100),
+                                  height: inner.height)
                 Self.color(for: row.level).setFill()
-                NSBezierPath(roundedRect: fill, xRadius: 3, yRadius: 3).fill()
+                NSBezierPath(roundedRect: fill, xRadius: 1, yRadius: 1).fill()
             }
-            x += Self.barWidth + 8
+            x += Self.barWidth + 10
 
             let text = row.percent.map { "\($0)%" } ?? "\u{2014}"
             (text as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: number)
@@ -84,7 +90,7 @@ final class UsageBarView: NSView {
 
     private static func color(for level: UsageLevel) -> NSColor {
         switch level {
-        case .normal: return .controlAccentColor
+        case .normal: return .labelColor
         case .warning: return .systemOrange
         case .limit: return .systemRed
         }

@@ -7,10 +7,12 @@ claude-switcher — open Claude accounts from the menu bar.
 USAGE
   claude-switcher             Run the menu bar app.
   claude-switcher --accounts  Print verified Claude Code account summaries as JSON.
+  claude-switcher --usage     Fetch verified usage percentages and reset times as JSON.
   claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
 
 Click an email to open Claude Code. A Sign in badge means that account needs a login.
+Tiny gauges show usage consumed, with exact reset times from Anthropic.
 Desktop profiles and their local usage history are available in the Desktop submenu.
 Desktop and terminal sign-ins are separate.
 
@@ -51,6 +53,40 @@ private func runAccounts() -> Int32 {
         return 0
     } catch {
         FileHandle.standardError.write(Data("Could not read accounts: \(error.localizedDescription)\n".utf8))
+        return 1
+    }
+}
+
+private func runUsage() async -> Int32 {
+    do {
+        let config = try Config.load()
+        let statuses = readAccounts(config)
+        var rows: [[String: Any]] = []
+        var succeeded = true
+        for profile in config.profiles {
+            guard let status = statuses[profile.id], status.matches(profile.expectedEmail), let email = status.email else {
+                rows.append(["id": profile.id, "state": "signInRequired"])
+                succeeded = false
+                continue
+            }
+            do {
+                let snapshot = try LiveUsageReader.read(profile: profile, email: email, executable: Diagnostics.locateOnSearchPath("claude"))
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                var row = try JSONSerialization.jsonObject(with: encoder.encode(snapshot)) as! [String: Any]
+                row["id"] = profile.id
+                row["state"] = "available"
+                rows.append(row)
+            } catch {
+                rows.append(["id": profile.id, "email": email, "state": "unavailable"])
+                succeeded = false
+            }
+        }
+        FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys]))
+        print()
+        return succeeded ? 0 : 1
+    } catch {
+        FileHandle.standardError.write(Data("Could not read usage settings.\n".utf8))
         return 1
     }
 }
@@ -97,6 +133,11 @@ if commandLineArguments.contains("--help") || commandLineArguments.contains("-h"
 
 if commandLineArguments.contains("--accounts") {
     exit(runAccounts())
+}
+
+if commandLineArguments.contains("--usage") {
+    Task { exit(await runUsage()) }
+    dispatchMain()
 }
 
 if commandLineArguments.contains("--dry-run") {
