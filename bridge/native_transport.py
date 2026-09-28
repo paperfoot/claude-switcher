@@ -18,7 +18,7 @@ from typing import BinaryIO, Callable
 
 MAX_NATIVE_MESSAGE = 1024 * 1024
 MAX_CLIENT_MESSAGE = 64 * 1024
-CLIENT_REQUEST_TIMEOUT = 45.0
+CLIENT_REQUEST_TIMEOUT = 150.0
 MAX_ID_LENGTH = 256
 MAX_EMAIL_LENGTH = 320
 MAX_ACTION_LENGTH = 128
@@ -313,6 +313,8 @@ def run_host(
                                     }
                                     if email is not None:
                                         forwarded["email"] = email
+                                        # Leave time for browser rollback before the caller times out.
+                                        forwarded["expiresAt"] = (time.time() + CLIENT_REQUEST_TIMEOUT - 40) * 1000
                                     _write_native(sys.stdout.buffer, forwarded)
                                     pending[request_id] = (
                                         client,
