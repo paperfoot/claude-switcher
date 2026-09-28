@@ -13,6 +13,8 @@ enum MenuBuilder {
         var selectProfile: Selector
         var copyTerminalCommand: Selector
         var openTerminal: Selector
+        var selectCodexAccount: Selector
+        var cancelCodexLogin: Selector
         var switchAccount: Selector
         var setupSwitching: Selector
         var addProfile: Selector
@@ -50,6 +52,10 @@ enum MenuBuilder {
         var now: Date = Date()
         /// Set after profiles were reopened automatically; shown once so it is never silent.
         var autoReopenNotice: String?
+        var codexAccounts: [CodexAccount] = []
+        var codexMessage: String?
+        var codexBusy = false
+        var codexConnecting = false
         var coordinated = false
         var selectedEmail: String?
         var browserEmail: String?
@@ -63,7 +69,7 @@ enum MenuBuilder {
     static func build(_ input: Input, target: AnyObject, actions: Actions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(informationalItem(input.coordinated ? "Claude accounts" : "Claude Code"))
+        menu.addItem(informationalItem(input.coordinated ? "Claude" : "Claude Code"))
         if input.configError != nil {
             menu.addItem(informationalItem("Settings could not be loaded"))
         }
@@ -73,7 +79,7 @@ enum MenuBuilder {
             applyAccount(to: item, profile: profile, status: input.accountStatuses[profile.id])
             if input.coordinated {
                 item.state = profile.expectedEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") == .orderedSame ? .on : .off
-                item.isEnabled = !input.switching
+                item.isEnabled = !input.switching && !input.codexBusy
                 item.toolTip = "Use this account in Chrome and the next Claude Code session."
             }
             menu.addItem(item)
@@ -83,10 +89,28 @@ enum MenuBuilder {
         }
         if input.coordinated {
             if let message = input.switchMessage { menu.addItem(informationalItem(message)) }
-            else if input.browserConnected, input.browserEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") == .orderedSame {
-                menu.addItem(informationalItem("Chrome and Code ready"))
-            } else {
+            else if !input.browserConnected || input.browserEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") != .orderedSame {
                 menu.addItem(actionItem(input.browserConnected ? "Connect this Chrome account…" : "Connect Chrome…", action: actions.setupSwitching, target: target))
+            }
+        }
+        if !input.codexAccounts.isEmpty {
+            menu.addItem(.separator())
+            menu.addItem(informationalItem("Codex"))
+            for account in input.codexAccounts {
+                let item = actionItem(account.email, action: actions.selectCodexAccount, target: target)
+                item.representedObject = account.email
+                item.identifier = NSUserInterfaceItemIdentifier("codex.account.\(account.email)")
+                item.state = account.active ? .on : .off
+                item.badge = account.connected ? nil : NSMenuItemBadge(string: "Connect")
+                item.isEnabled = !input.codexBusy && !input.switching
+                item.toolTip = account.connected ? "Select this Codex account and reopen Codex. New CLI sessions use it too." : "Sign in once to save this Codex account."
+                if account.identityEmail != account.email { item.toolTip! += " Codex email: \(account.identityEmail)." }
+                menu.addItem(item)
+                if account.connected { menu.addItem(codexUsageItem(account, now: input.now)) }
+            }
+            if let message = input.codexMessage { menu.addItem(informationalItem(message)) }
+            if input.codexConnecting {
+                menu.addItem(actionItem("Cancel sign-in", action: actions.cancelCodexLogin, target: target))
             }
         }
         menu.addItem(.separator())
@@ -152,6 +176,18 @@ enum MenuBuilder {
         settings.addItem(submenuItem("Copy terminal command", menu: commands))
         settings.addItem(submenuItem("Rename desktop profile", menu: rename))
         settings.addItem(submenuItem("Remove account", menu: remove))
+        if !input.codexAccounts.isEmpty {
+            let reconnect = NSMenu()
+            reconnect.autoenablesItems = false
+            for account in input.codexAccounts {
+                let item = actionItem(account.email, action: actions.selectCodexAccount, target: target)
+                item.representedObject = account.email
+                item.tag = 1
+                item.isEnabled = !input.codexBusy && !input.switching
+                reconnect.addItem(item)
+            }
+            settings.addItem(submenuItem("Reconnect Codex account", menu: reconnect))
+        }
         settings.addItem(.separator())
         let reopen = actionItem("Reopen desktops after updates", action: actions.toggleReopenAfterUpdate, target: target)
         reopen.state = input.config.reopenAfterUpdate ? .on : .off
@@ -197,21 +233,20 @@ enum MenuBuilder {
             let percent = window.flatMap { $0.percent.isFinite ? Int(min(100, max(0, $0.percent)).rounded()) : nil }
             var trailing: String
             if expired {
-                trailing = "Previous · reset passed"
+                trailing = "↻ due"
             } else if let reset = window?.resetsAt {
-                trailing = "resets \(clock(reset, now: now))"
+                trailing = "↻ \(compactClock(reset, now: now))"
             } else if window?.percent == 0 {
-                trailing = "Not started"
+                trailing = "—"
             } else if window != nil {
-                trailing = "Reset unknown"
+                trailing = "—"
             } else {
-                trailing = status == .signedOut ? "Sign in" : (failed ? "Retrying…" : (matches || status == nil ? "Loading…" : "Checking account…"))
+                trailing = status == .signedOut ? "Sign in" : (failed ? "Retrying" : (matches || status == nil ? "Loading" : "Checking"))
             }
-            if presentation.isCached && window != nil && !expired { trailing += " · cached" }
             return UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0),
                                     trailing: trailing, isCached: presentation.isCached || expired)
         }
-        let view = UsageBarView(rows: rows, width: 300)
+        let view = UsageBarView(rows: rows)
         let details = rows.map { "\($0.label): \($0.percent.map { "\($0)% used" } ?? "unavailable"), \($0.trailing ?? "sign in first")" }.joined(separator: ". ")
         let checked = snapshot.map { " Last checked \(clock($0.fetchedAt, now: now))." } ?? ""
         view.toolTip = details + checked
@@ -220,6 +255,36 @@ enum MenuBuilder {
         item.view = view
         item.identifier = NSUserInterfaceItemIdentifier("claude-switcher.live-usage.\(profile.id)")
         return item
+    }
+
+    private static func codexUsageItem(_ account: CodexAccount, now: Date) -> NSMenuItem {
+        let snapshot = account.usage
+        let cached = account.usageFailed || snapshot.map { now.timeIntervalSince($0.fetchedAt) > 300 } ?? true
+        let rows = [("5h", snapshot?.fiveHour), ("Week", snapshot?.sevenDay)].map { label, window in
+            let expired = window?.resetsAt.map { $0 <= now } ?? false
+            let percent = window.map { Int(min(100, max(0, $0.percent)).rounded()) }
+            let reset = expired ? "↻ due" : window?.resetsAt.map { "↻ \(compactClock($0, now: now))" }
+            return UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0),
+                                    trailing: reset, isCached: cached || expired)
+        }
+        let view = UsageBarView(rows: rows)
+        let details = [("5-hour", snapshot?.fiveHour), ("Weekly", snapshot?.sevenDay)].map { label, value in
+            "\(label): \(value.map { "\(Int($0.percent.rounded()))% used" } ?? "unavailable")" +
+            (value?.resetsAt.map { ", resets \(clock($0, now: now))" } ?? "")
+        }.joined(separator: ". ")
+        view.toolTip = details + (snapshot.map { ". Updated \(clock($0.fetchedAt, now: now))" } ?? ". Refreshing…") + (cached ? ". Cached" : "")
+        view.setAccessibilityElement(false)
+        let item = informationalItem("\(account.email). \(view.toolTip ?? "")")
+        item.view = view
+        item.identifier = NSUserInterfaceItemIdentifier("codex.usage.\(account.email)")
+        return item
+    }
+
+    private static func compactClock(_ date: Date, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "EEE HH:mm"
+        return formatter.string(from: date)
     }
 
     static func updateLiveUsage(in menu: NSMenu, config: Config, statuses: [String: AccountStatus],

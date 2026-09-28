@@ -10,6 +10,9 @@ USAGE
   claude-switcher --switch EMAIL  Select an account for Chrome and ordinary Claude Code.
   claude-switcher --switch-status Print coordinated account state as JSON.
   claude-switcher --usage     Fetch verified usage percentages and reset times as JSON.
+  claude-switcher --codex-accounts Print saved Codex account status and usage.
+  claude-switcher --codex-connect EMAIL  Save a Codex login through the browser.
+  claude-switcher --codex-switch EMAIL  Select an account and reopen Codex.
   claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
 
@@ -176,6 +179,36 @@ if commandLineArguments.contains("--usage") {
 
 if commandLineArguments.contains("--dry-run") {
     exit(runDryRun())
+}
+
+if commandLineArguments.contains("--codex-accounts") || commandLineArguments.contains("--codex-connect") || commandLineArguments.contains("--codex-switch") {
+    Task { @MainActor in
+        do {
+            guard let runtime = CodexRuntime.installed() else { throw CodexSwitchError.unavailable }
+            let config = try Config.load()
+            let settings = CodexAccountSettings.load(fallbackEmails: config.profiles.compactMap(\.expectedEmail))
+            let service = CodexAccountService(emails: settings.emails, aliases: settings.aliases, runtime: runtime)
+            let result: [CodexAccount]
+            if let index = commandLineArguments.firstIndex(of: "--codex-connect"), commandLineArguments.index(after: index) < commandLineArguments.endIndex {
+                result = try await service.connect(email: commandLineArguments[commandLineArguments.index(after: index)]) { url in
+                    guard await MainActor.run(body: { NSWorkspace.shared.open(url) }) else { throw CodexSwitchError.unavailable }
+                }
+            } else if let index = commandLineArguments.firstIndex(of: "--codex-switch"), commandLineArguments.index(after: index) < commandLineArguments.endIndex {
+                result = try await service.select(email: commandLineArguments[commandLineArguments.index(after: index)], desktop: CodexDesktop())
+            } else {
+                result = try await service.refresh(usage: !commandLineArguments.contains("--cached"))
+            }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+            FileHandle.standardOutput.write(try encoder.encode(result)); print(); exit(0)
+        } catch {
+            if case let CodexSwitchError.keychainStatus(status) = error {
+                FileHandle.standardError.write(Data("Keychain status: \(status)\n".utf8))
+            }
+            let text = (error as? CodexSwitchError)?.errorDescription ?? "Codex could not connect."
+            FileHandle.standardError.write(Data((text + "\n").utf8)); exit(1)
+        }
+    }
+    dispatchMain()
 }
 
 // AppDelegate is @MainActor-isolated. Top-level code in main.swift is a synchronous

@@ -8,6 +8,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - State
 
+    private var codexService: CodexAccountService?
+    private var codexAccounts: [CodexAccount] = []
+    private var codexMessage: String?
+    private var codexBusy = false
+    private var codexConnecting = false
+    private var codexTask: Task<Void, Never>?
+    private var codexRefreshTask: Task<Void, Never>?
+    private var codexTimer: Timer?
+    private var codexLastRefresh: Date = .distantPast
     private var statusItem: NSStatusItem?
     private var statusFeedback: StatusItemFeedback?
     private var config: Config = .defaultConfig()
@@ -76,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         selectProfile: #selector(selectProfile(_:)),
         copyTerminalCommand: #selector(copyTerminalCommand(_:)),
         openTerminal: #selector(openTerminal(_:)),
+        selectCodexAccount: #selector(selectCodexAccount(_:)),
+        cancelCodexLogin: #selector(cancelCodexLogin(_:)),
         switchAccount: #selector(switchAccount(_:)),
         setupSwitching: #selector(setupSwitching(_:)),
         addProfile: #selector(addProfile(_:)),
@@ -95,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         reloadConfig()
+        configureCodex()
         liveUsage = LiveUsageCache.load(profiles: config.profiles)
         nextUsageRefresh = liveUsage.mapValues { LiveUsagePolicy.nextRefresh(for: $0, now: Date()) }
 
@@ -125,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.isSleeping = false
                 self?.outsideTriggerForReopen()
                 self?.refreshSignInStates(force: true)
+                self?.refreshCodex(force: true)
             }
         }
 
@@ -132,10 +145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated {
                 self?.isSleeping = true
                 self?.usageRefreshTimer?.invalidate()
+                self?.codexTimer?.invalidate()
             }
         }
 
         refreshSignInStates()
+        refreshCodex(force: true)
         reconcileUpdateBlock()
         outsideTriggerForReopen()
     }
@@ -158,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         usage = Self.readUsage(for: config.profiles)
         refreshSignInStates()
         refreshLiveUsage()
+        refreshCodex()
         rebuild(menu)
     }
 
@@ -198,6 +214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             usage: usage,
             now: Date(),
             autoReopenNotice: autoReopenNotice,
+            codexAccounts: codexAccounts,
+            codexMessage: codexMessage,
+            codexBusy: codexBusy,
+            codexConnecting: codexConnecting,
             coordinated: CoordinatedSetup.load()?.enabled == true,
             selectedEmail: selectedEmailOverride ?? coordinatedSnapshot?.codeEmail,
             browserEmail: coordinatedSnapshot?.browser.email,
@@ -432,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func switchAccount(_ sender: NSMenuItem) {
-        guard !isSwitchingAccount, let id = sender.representedObject as? String,
+        guard !isSwitchingAccount, !codexBusy, let id = sender.representedObject as? String,
               let email = config.profile(id: id)?.expectedEmail,
               let setup = CoordinatedSetup.load(), setup.enabled else { return }
         isSwitchingAccount = true
@@ -461,6 +481,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let page = Bundle.main.url(forResource: "setup", withExtension: "html") {
             NSWorkspace.shared.open(page)
         }
+    }
+
+    // MARK: - Codex accounts
+
+    private func configureCodex() {
+        let emails = config.profiles.compactMap(\.expectedEmail)
+        let settings = CodexAccountSettings.load(fallbackEmails: emails)
+        codexAccounts = CodexAccountFiles().loadCache(emails: settings.emails, aliases: settings.aliases)
+        guard let runtime = CodexRuntime.installed() else {
+            codexMessage = "Install Codex to connect accounts"
+            return
+        }
+        codexService = CodexAccountService(emails: settings.emails, aliases: settings.aliases, runtime: runtime)
+    }
+
+    private func refreshCodex(force: Bool = false) {
+        guard let service = codexService, !codexBusy, !isSleeping, codexRefreshTask == nil,
+              force || Date().timeIntervalSince(codexLastRefresh) >= 30 else { return }
+        codexRefreshTask = Task {
+            defer {
+                codexRefreshTask = nil
+                codexLastRefresh = Date()
+                scheduleCodexRefresh()
+            }
+            do {
+                codexAccounts = try await service.refresh(usage: false)
+                rebuildIfVisible()
+                try Task.checkCancellation()
+                codexAccounts = try await service.refresh()
+                if !codexBusy { rebuildIfVisible() }
+            } catch {
+                if !Task.isCancelled && !codexBusy {
+                    if case CodexSwitchError.busy = error { return }
+                    codexMessage = codexError(error); rebuildIfVisible()
+                }
+            }
+        }
+    }
+
+    private func scheduleCodexRefresh() {
+        codexTimer?.invalidate()
+        guard !isSleeping else { return }
+        let timer = Timer(timeInterval: 300, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshCodex(force: true) }
+        }
+        timer.tolerance = 10
+        codexTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func selectCodexAccount(_ sender: NSMenuItem) {
+        guard !codexBusy, !isSwitchingAccount, let email = sender.representedObject as? String,
+              let account = codexAccounts.first(where: { $0.email == email }), let service = codexService else { return }
+        codexBusy = true
+        let needsLogin = !account.connected || sender.tag == 1
+        codexConnecting = needsLogin
+        codexMessage = codexConnecting ? "Sign in to \(email) in your browser" : "Switching Codex…"
+        statusFeedback?.begin(email: "Codex · \(email)")
+        let refresh = codexRefreshTask
+        refresh?.cancel()
+        rebuildIfVisible()
+        codexTask = Task {
+            await refresh?.value
+            var succeeded = false
+            do {
+                try Task.checkCancellation()
+                if needsLogin {
+                    codexAccounts = try await service.connect(email: email) { url in
+                        let opened = await MainActor.run { NSWorkspace.shared.open(url) }
+                        guard opened else { throw CodexSwitchError.unavailable }
+                    }
+                    codexMessage = "Account saved · click to switch"
+                } else {
+                    codexAccounts = try await service.select(email: email, desktop: CodexDesktop())
+                    codexMessage = "Codex account selected"
+                }
+                succeeded = true
+            } catch {
+                codexAccounts = await service.snapshot()
+                codexMessage = Task.isCancelled ? "Sign-in cancelled" : codexError(error)
+            }
+            codexBusy = false
+            codexConnecting = false
+            codexTask = nil
+            statusFeedback?.finish(ok: succeeded, browserReady: succeeded, email: "Codex · \(email)",
+                                   message: codexMessage ?? "Codex needs attention") { [weak self = self] in
+                self?.codexMessage = nil
+                self?.rebuildIfVisible()
+            }
+            rebuildIfVisible()
+            scheduleCodexRefresh()
+        }
+    }
+
+    @objc private func cancelCodexLogin(_ sender: NSMenuItem) {
+        guard codexConnecting else { return }
+        codexTask?.cancel()
+    }
+
+    private func codexError(_ error: Error) -> String {
+        // Provider errors can contain request metadata; only expose our short curated copy.
+        (error as? CodexSwitchError)?.errorDescription ?? "Codex could not connect · try again"
     }
 
     // MARK: - Actions: profiles
