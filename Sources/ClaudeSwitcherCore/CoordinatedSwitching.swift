@@ -70,6 +70,7 @@ public struct CoordinatedResult: Decodable, Sendable {
         case "web_login_needed", "web_login_expired": return "Save this account in the Chrome companion first"
         case "web_switch_failed": return "Chrome could not switch · previous account restored"
         case "switch_in_progress": return "Another switch is finishing"
+        case "code_only_after_web_failure": return "Code switched · Chrome needs attention"
         case "code_restore_failed", "web_restore_failed": return "Account needs attention · check Chrome and Code"
         default: return "Could not switch accounts · try again"
         }
