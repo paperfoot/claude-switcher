@@ -4,13 +4,20 @@ import {randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
-import {SessionSwitcher, identityFrom, claudeCookie} from './session-core.js';
+import {SessionSwitcher, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
 
 const EMAIL = {
   A: 'a@example.com',
   B: 'b@example.com',
   C: 'c@example.com',
 };
+const BROWSER_COOKIE_NAMES = [
+  '__cf_bm',
+  '_cfuvid',
+  'cf_clearance',
+  'ion-vk',
+  'anthropic-device-id',
+];
 
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
@@ -40,6 +47,16 @@ function savedSession(key, overrides = {}) {
     url: `https://claude.ai/${key.toLowerCase()}`,
     ...overrides,
   };
+}
+
+function browserCookies(version) {
+  return BROWSER_COOKIE_NAMES.map(name => sessionCookie(`${version}:${name}`, {name}));
+}
+
+function browserCookieValues(cookies) {
+  return Object.fromEntries(cookies
+    .filter(cookie => BROWSER_COOKIE_NAMES.includes(cookie.name))
+    .map(cookie => [cookie.name, cookie.value]));
 }
 
 function cookieFromSetDetails(details) {
@@ -197,7 +214,7 @@ async function makeHarness({
   };
 
   const source = await readFile(new URL('./background.js', import.meta.url), 'utf8');
-  const executable = source.replace(/^import \{SessionSwitcher, identityFrom, claudeCookie\} from '\.\/session-core\.js';\n/, '');
+  const executable = source.replace(/^import \{SessionSwitcher, identityFrom, claudeCookie, browserScopedCookie\} from '\.\/session-core\.js';\n/, '');
   assert.notEqual(executable, source, 'background module import was removed for dependency injection');
   vm.runInNewContext(executable, {
     AbortSignal,
@@ -205,6 +222,7 @@ async function makeHarness({
     URL,
     chrome,
     claudeCookie,
+    browserScopedCookie,
     clearTimeout,
     console,
     crypto: {randomUUID},
@@ -284,6 +302,68 @@ test('reconnect saves the current browser account before restoring and acknowled
   assert.equal(ready.email, EMAIL.B);
   assert.equal(harness.currentEmail(), EMAIL.B);
   assert.equal(harness.tabs[0].url, 'https://claude.ai/b');
+});
+
+test('a menu switch preserves live browser-scoped cookies over stale saved versions', async () => {
+  const liveBrowserCookies = browserCookies('LIVE');
+  const staleBrowserCookies = browserCookies('OLD');
+  const harness = await makeHarness({
+    initialCookies: [sessionCookie('A'), ...liveBrowserCookies],
+    entries: [
+      savedSession('A'),
+      savedSession('B', {cookies: [sessionCookie('B'), ...staleBrowserCookies]}),
+    ],
+  });
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+
+  const menu = await harness.sendMenu({id: 'browser-cookie-switch', command: 'switch', email: EMAIL.B});
+
+  assert.deepEqual(clone(menu.result), {ok: true, email: EMAIL.B});
+  assert.equal(harness.currentEmail(), EMAIL.B);
+  assert.deepEqual(browserCookieValues(harness.jar()), browserCookieValues(liveBrowserCookies));
+});
+
+test('a failed popup selection rolls back identity without replacing live browser-scoped cookies', async () => {
+  const liveBrowserCookies = browserCookies('LIVE');
+  const staleBrowserCookies = browserCookies('OLD');
+  const harness = await makeHarness({
+    initialCookies: [sessionCookie('A'), ...liveBrowserCookies],
+    entries: [
+      savedSession('A'),
+      savedSession('B', {cookies: [sessionCookie('B'), ...staleBrowserCookies]}),
+    ],
+    deferSelect: true,
+  });
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+
+  const popup = harness.sendPopup({action: 'switch', email: EMAIL.B});
+  await harness.waitForNative('select');
+  assert.equal(harness.currentEmail(), EMAIL.B);
+
+  harness.resolveDeferred('select', {ok: false, error: 'code account unavailable'});
+  assert.deepEqual(clone(await popup), {
+    ok: false,
+    error: 'code_switch_failed',
+    email: EMAIL.B,
+  });
+  assert.equal(harness.currentEmail(), EMAIL.A);
+  assert.deepEqual(browserCookieValues(harness.jar()), browserCookieValues(liveBrowserCookies));
+});
+
+test('newLogin clears account cookies while preserving live browser-scoped cookies', async () => {
+  const liveBrowserCookies = browserCookies('LIVE');
+  const harness = await makeHarness({
+    initialCookies: [sessionCookie('A'), ...liveBrowserCookies],
+  });
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+
+  assert.deepEqual(clone(await harness.sendPopup({action: 'newLogin'})), {ok: true});
+  assert.equal(harness.currentEmail(), null);
+  assert.deepEqual(browserCookieValues(harness.jar()), browserCookieValues(liveBrowserCookies));
+  assert.equal(harness.tabs[0].url, 'https://claude.ai/login');
 });
 
 for (const [state, target] of [

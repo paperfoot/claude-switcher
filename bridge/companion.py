@@ -2,6 +2,7 @@
 """Local coordinator. No web cookies or tokens are written to logs or JSON files."""
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -43,6 +44,19 @@ def read_state():
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def restorable_web_entry(entry, now=None):
+    """Skip expired cookie writes, including for older already-loaded companions."""
+    now = time.time() if now is None else now
+    def live(cookie):
+        # Browser/device validation is not an account credential. Let Chrome keep or renew it.
+        if cookie.get('name') in {'__cf_bm', '_cfuvid', 'cf_clearance', 'ion-vk', 'anthropic-device-id'}:
+            return False
+        expiration = cookie.get('expirationDate')
+        return bool(cookie.get('session')) or expiration is None or (
+            isinstance(expiration, (int, float)) and math.isfinite(expiration) and expiration > now)
+    return {**entry, 'cookies': [cookie for cookie in entry.get('cookies', []) if live(cookie)]}
 
 
 def configured_emails():
@@ -156,7 +170,7 @@ def handle_native(message):
         if action == 'vault_get':
             email = validate_email(message.get('email'))
             raw = macos_keychain.get_password(service, email)
-            return {'ok': True, 'entry': json.loads(raw) if raw else None}
+            return {'ok': True, 'entry': restorable_web_entry(json.loads(raw)) if raw else None}
         if action == 'vault_put':
             entry = message['entry']
             email = validate_email(entry.get('email'))

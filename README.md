@@ -19,6 +19,8 @@ A small native macOS menu bar app with compact five-hour and weekly usage gauges
 
 Switching does not open a terminal. Your working directory, normal `~/.claude` history, and setup stay in place. Already-running Code sessions are not stopped; restarting them is the reliable way to use the selected account immediately. Claude's own credential cache can delay changes inside a running process.
 
+The menu-bar icon spins during a switch. A green check appears for three seconds after success. A red warning stays visible after failure; amber means Code switched but Chrome still needs attention. The selected account updates as soon as the switch is verified.
+
 Code and Chrome have separate credentials. The switcher coordinates them; it does not run `/login` on every switch. Initial authorization is required once per account, and expired or revoked logins may need authorization again.
 
 ## Install

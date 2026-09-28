@@ -86,6 +86,7 @@ function makeRig({
     },
     async set(details) {
       events.push(`browser:set:${details.value}`);
+      if (details.expirationDate !== undefined && details.expirationDate <= Date.now() / 1000) return null;
       if (onSet && !await onSet(details, events)) return false;
       jar = jar.filter(cookie => !(cookie.name === details.name && cookie.storeId === details.storeId));
       jar.push(cookieFromSetDetails(details));
@@ -143,6 +144,7 @@ test('helpers normalize account identity and recognize a live Claude session', (
   assert.equal(emailKey('A@EXAMPLE.COM'), EMAIL.A);
   assert.equal(identityFrom({current_account: {email_address: 'B@EXAMPLE.COM'}}), EMAIL.B);
   assert.equal(validSession([sessionCookie('A')]), true);
+  assert.equal(validSession([sessionCookie('A', {session: false, expirationDate: 20})], 20), false);
   assert.equal(validSession([sessionCookie('A', {session: false, expirationDate: 10})], 20), false);
 });
 
@@ -219,6 +221,24 @@ test('an expired target leaves the live cookie jar untouched', async () => {
   assert.equal(rig.events.some(event => event.startsWith('browser:set:')), false);
 });
 
+test('an expired auxiliary target cookie is ignored while restoring a valid session', async t => {
+  t.mock.method(Date, 'now', () => 20_000);
+  const expiredAuxiliary = sessionCookie('expired-target-auxiliary', {
+    name: '__cf_bm',
+    session: false,
+    expirationDate: 10,
+  });
+  const target = savedSession('B', {
+    cookies: [sessionCookie('B'), expiredAuxiliary],
+  });
+  const rig = makeRig({entries: [savedSession('A'), target]});
+
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B), {ok: true, email: EMAIL.B});
+  assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'B');
+  assert.equal(rig.jar().some(cookie => cookie.name === '__cf_bm'), false);
+  assert.equal(rig.events.includes('browser:set:expired-target-auxiliary'), false);
+});
+
 test('a target cookie set failure restores A and reports switch failure', async () => {
   let failedTarget = false;
   const rig = makeRig({
@@ -271,6 +291,27 @@ test('a thrown code switch failure restores A and reports code_switch_failed', a
   assert.equal(rig.events.filter(event => event === 'browser:clear').length, 2);
   assert.equal(rig.events.includes(`probe:${EMAIL.A}`), true);
   assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
+});
+
+test('rollback ignores an expired auxiliary cookie while restoring the previous identity', async t => {
+  t.mock.method(Date, 'now', () => 20_000);
+  const expiredAuxiliary = sessionCookie('expired-previous-auxiliary', {
+    name: '__cf_bm',
+    session: false,
+    expirationDate: 10,
+  });
+  const rig = makeRig({initialCookies: [sessionCookie('A'), expiredAuxiliary]});
+
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, async () => ({ok: false})), {
+    ok: false,
+    error: 'code_switch_failed',
+    email: EMAIL.B,
+  });
+
+  assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
+  assert.equal(await rig.probe(), EMAIL.A);
+  assert.equal(rig.jar().some(cookie => cookie.name === '__cf_bm'), false);
+  assert.equal(rig.events.includes('browser:set:expired-previous-auxiliary'), false);
 });
 
 test('an explicit code switch failure restores a signed-out browser state', async () => {

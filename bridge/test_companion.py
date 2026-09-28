@@ -62,11 +62,169 @@ class CompanionTests(unittest.TestCase):
     def assert_saved(self, result):
         self.assertEqual(json.loads(self.state.read_text()), result)
 
-    def handle_native(self, message):
+    def handle_native(self, message, keychain=None):
         fake_claude_swap = types.ModuleType("claude_swap")
-        fake_claude_swap.macos_keychain = mock.Mock()
+        fake_claude_swap.macos_keychain = keychain or mock.Mock()
         with mock.patch.dict(sys.modules, {"claude_swap": fake_claude_swap}):
             return companion.handle_native(message)
+
+    def test_restorable_web_entry_filters_unrestorable_cookies_without_mutating_source(self):
+        entry = {
+            "email": TARGET_EMAIL,
+            "savedAt": 1234567890,
+            "url": "https://claude.ai/new",
+            "cookies": [
+                {
+                    "name": "expired-at-boundary",
+                    "value": "old",
+                    "session": False,
+                    "expirationDate": 100,
+                },
+                {
+                    "name": "zero-expiry",
+                    "value": "old",
+                    "session": False,
+                    "expirationDate": 0,
+                },
+                {
+                    "name": "sessionKey",
+                    "value": "live",
+                    "session": False,
+                    "expirationDate": 101,
+                },
+                {
+                    "name": "sessionKeyLC",
+                    "value": "session",
+                    "session": True,
+                },
+                {
+                    "name": "lastActiveOrg",
+                    "value": "org",
+                    "session": False,
+                    "expirationDate": 101,
+                },
+                *(
+                    {
+                        "name": name,
+                        "value": "stale-browser-validation",
+                        "session": False,
+                        "expirationDate": 101,
+                    }
+                    for name in (
+                        "__cf_bm",
+                        "_cfuvid",
+                        "cf_clearance",
+                        "ion-vk",
+                        "anthropic-device-id",
+                    )
+                ),
+            ],
+        }
+        original = json.loads(json.dumps(entry))
+
+        result = companion.restorable_web_entry(entry, now=100)
+
+        self.assertEqual(result["email"], TARGET_EMAIL)
+        self.assertEqual(result["savedAt"], 1234567890)
+        self.assertEqual(result["url"], "https://claude.ai/new")
+        self.assertEqual(
+            [cookie["name"] for cookie in result["cookies"]],
+            ["sessionKey", "sessionKeyLC", "lastActiveOrg"],
+        )
+        self.assertEqual(entry, original)
+
+    def test_vault_get_drops_expired_login_without_renewing_stored_entry(self):
+        entry = {
+            "email": TARGET_EMAIL,
+            "savedAt": 1234567890,
+            "url": "https://claude.ai/new",
+            "cookies": [
+                {
+                    "name": "sessionKey",
+                    "value": "expired-login",
+                    "domain": ".claude.ai",
+                    "session": False,
+                    "expirationDate": 100,
+                }
+            ],
+        }
+        encoded = json.dumps(entry)
+        keychain = mock.Mock()
+        keychain.get_password.return_value = encoded
+
+        with mock.patch.object(companion.time, "time", return_value=100):
+            result = self.handle_native(
+                {"action": "vault_get", "email": TARGET_EMAIL},
+                keychain=keychain,
+            )
+
+        self.assertEqual(
+            result,
+            {
+                "ok": True,
+                "entry": {
+                    "email": TARGET_EMAIL,
+                    "savedAt": 1234567890,
+                    "url": "https://claude.ai/new",
+                    "cookies": [],
+                },
+            },
+        )
+        keychain.get_password.assert_called_once_with(
+            "Paperfoot Claude Switcher Web", TARGET_EMAIL
+        )
+        keychain.set_password.assert_not_called()
+        self.assertEqual(json.loads(encoded), entry)
+
+    def test_vault_get_does_not_restore_stale_browser_validation_cookies(self):
+        browser_validation_names = (
+            "__cf_bm",
+            "_cfuvid",
+            "cf_clearance",
+            "ion-vk",
+            "anthropic-device-id",
+        )
+        entry = {
+            "email": TARGET_EMAIL,
+            "savedAt": 1,
+            "url": "https://claude.ai/new",
+            "cookies": [
+                {
+                    "name": "sessionKey",
+                    "value": "account-login",
+                    "domain": ".claude.ai",
+                    "session": False,
+                    "expirationDate": 200,
+                },
+                *(
+                    {
+                        "name": name,
+                        "value": "old-browser-state",
+                        "domain": ".claude.ai",
+                        "session": False,
+                        "expirationDate": 200,
+                    }
+                    for name in browser_validation_names
+                ),
+            ],
+        }
+        encoded = json.dumps(entry)
+        keychain = mock.Mock()
+        keychain.get_password.return_value = encoded
+
+        with mock.patch.object(companion.time, "time", return_value=100):
+            result = self.handle_native(
+                {"action": "vault_get", "email": TARGET_EMAIL},
+                keychain=keychain,
+            )
+
+        self.assertEqual(
+            [cookie["name"] for cookie in result["entry"]["cookies"]],
+            ["sessionKey"],
+        )
+        self.assertEqual(result["entry"]["savedAt"], 1)
+        keychain.set_password.assert_not_called()
+        self.assertEqual(json.loads(encoded), entry)
 
     def test_read_state_tolerates_missing_corrupt_and_non_object_state(self):
         self.assertEqual(companion.read_state(), {})

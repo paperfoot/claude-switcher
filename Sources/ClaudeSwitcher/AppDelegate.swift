@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - State
 
     private var statusItem: NSStatusItem?
+    private var statusFeedback: StatusItemFeedback?
     private var config: Config = .defaultConfig()
     private var configError: String?
     private var running: [RunningInstance] = []
@@ -28,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isReadingCoordinated = false
     private var lastCoordinatedCheck: Date = .distantPast
     private var coordinatedGeneration = 0
+    private var selectedEmailOverride: String?
     private var usageRefreshTimer: Timer?
     private var isSleeping = false
 
@@ -96,16 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         liveUsage = LiveUsageCache.load(profiles: config.profiles)
         nextUsageRefresh = liveUsage.mapValues { LiveUsagePolicy.nextRefresh(for: $0, now: Date()) }
 
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            if let image = NSImage(systemSymbolName: "person.2.circle", accessibilityDescription: "Claude Switcher") {
-                image.isTemplate = true
-                button.image = image
-            } else {
-                button.title = "Claude"
-            }
-            button.toolTip = "Claude accounts"
-            button.setAccessibilityLabel("Claude accounts")
+            statusFeedback = StatusItemFeedback(button: button)
         }
 
         let menu = NSMenu()
@@ -204,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             now: Date(),
             autoReopenNotice: autoReopenNotice,
             coordinated: CoordinatedSetup.load()?.enabled == true,
-            selectedEmail: coordinatedSnapshot?.codeEmail,
+            selectedEmail: selectedEmailOverride ?? coordinatedSnapshot?.codeEmail,
             browserEmail: coordinatedSnapshot?.browser.email,
             browserConnected: coordinatedSnapshot?.browser.ok == true,
             switching: isSwitchingAccount,
@@ -417,6 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastCoordinatedCheck = Date()
             if let result {
                 coordinatedSnapshot = result
+                selectedEmailOverride = nil
                 let now = Date()
                 for profile in config.profiles {
                     guard let email = profile.expectedEmail,
@@ -441,13 +437,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let setup = CoordinatedSetup.load(), setup.enabled else { return }
         isSwitchingAccount = true
         coordinatedGeneration += 1
+        let generation = coordinatedGeneration
         switchMessage = "Switching…"
+        statusFeedback?.begin(email: email)
         rebuildIfVisible()
         Task {
             let result = await Task.detached(priority: .userInitiated) { try? CoordinatedSwitching.select(email: email, setup: setup) }.value
             isSwitchingAccount = false
             switchMessage = result?.summary ?? "Could not switch accounts · try again"
-            if result?.ok == true { statusItem?.button?.toolTip = "Claude: \(email)" }
+            selectedEmailOverride = result?.codeEmail
+            statusFeedback?.finish(ok: result?.ok == true, browserReady: result?.browserReady == true,
+                                   email: email, message: switchMessage ?? "Switch failed") { [weak self = self] in
+                guard let self, self.coordinatedGeneration == generation else { return }
+                self.switchMessage = nil
+                self.rebuildIfVisible()
+            }
             refreshCoordinatedAccounts(setup: setup, force: true)
             rebuildIfVisible()
         }
