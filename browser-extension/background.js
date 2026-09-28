@@ -1,4 +1,4 @@
-import {SessionSwitcher, identityFrom, claudeCookie} from './session-core.js';
+import {SessionSwitcher, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
 const HOST = 'org.paperfoot.claude_switcher';
 let port;
 let connectionError = 'Open Claude Switcher to connect';
@@ -28,7 +28,7 @@ const browser = {
   cookies:()=>chrome.cookies.getAll({domain:'claude.ai',storeId:'0'}),
   async clear() {
     for(const c of await this.cookies()) {
-      if(!claudeCookie(c)) continue;
+      if(!claudeCookie(c) || browserScopedCookie(c)) continue;
       const removed=await chrome.cookies.remove({url:`https://${c.domain.replace(/^\./,'')}${c.path||'/'}`,name:c.name,storeId:c.storeId,...(c.partitionKey?{partitionKey:c.partitionKey}:{})});
       if(!removed) throw new Error('Could not clear Claude session');
     }

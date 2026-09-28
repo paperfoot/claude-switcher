@@ -7,6 +7,9 @@ export function claudeCookie(cookie) {
   const domain = String(cookie?.domain || '').replace(/^\./, '');
   return domain === 'claude.ai' || domain.endsWith('.claude.ai');
 }
+export function browserScopedCookie(cookie) {
+  return ['__cf_bm', '_cfuvid', 'cf_clearance', 'ion-vk', 'anthropic-device-id'].includes(cookie.name);
+}
 export function cookieDetails(cookie) {
   if (!claudeCookie(cookie) || typeof cookie.value !== 'string' || typeof cookie.name !== 'string') throw new Error('Invalid saved cookie');
   const domain = cookie.domain.replace(/^\./, '');
@@ -20,7 +23,11 @@ export function cookieDetails(cookie) {
   return result;
 }
 export function validSession(cookies, now = Date.now() / 1000) {
-  return cookies.some(c => claudeCookie(c) && c.name === 'sessionKey' && c.value && (c.session || !c.expirationDate || c.expirationDate > now));
+  return cookies.some(c => claudeCookie(c) && c.name === 'sessionKey' && c.value && unexpiredCookie(c, now));
+}
+export function unexpiredCookie(cookie, now = Date.now() / 1000) {
+  return cookie.session || cookie.expirationDate === undefined ||
+    (Number.isFinite(cookie.expirationDate) && cookie.expirationDate > now);
 }
 export function identityFrom(data) {
   const account = data?.account || data?.current_account || data;
@@ -67,7 +74,7 @@ export class SessionSwitcher {
     if (!target || emailKey(target.email) !== email) return {ok:false,error:'web_login_needed',email};
     if (!Array.isArray(target.cookies) || !validSession(target.cookies)) return {ok:false,error:'web_login_expired',email};
     // Validate the entire target before touching the live cookie jar.
-    const details = target.cookies.map(cookieDetails);
+    const details = target.cookies.map(cookie => ({cookie, details:cookieDetails(cookie)}));
     const previous = (await this.browser.cookies()).filter(claudeCookie);
     let oldIdentity = await this.probe();
     if (oldIdentity) {
@@ -86,9 +93,12 @@ export class SessionSwitcher {
     try {
       if (expired()) return {ok:false,error:'browser_timeout',email};
       await this.browser.clear();
-      for (const cookie of details) {
+      for (const entry of details) {
         if (expired()) throw new Error('Switch timed out');
-        if (!await this.browser.set(cookie)) throw new Error('Cookie restoration failed');
+        // Chrome treats setting a past expiry as deletion and can return null.
+        // Ancillary cookies may expire hours before the actual Claude login does.
+        if (!unexpiredCookie(entry.cookie) || browserScopedCookie(entry.cookie)) continue;
+        if (!await this.browser.set(entry.details)) throw new Error('Cookie restoration failed');
       }
       if (await this.probe() !== email) throw new Error('Restored account could not be verified');
       if (expired()) throw new Error('Switch timed out');
@@ -103,6 +113,7 @@ export class SessionSwitcher {
       try {
         await this.browser.clear();
         for (const cookie of previous) {
+          if (!unexpiredCookie(cookie) || browserScopedCookie(cookie)) continue;
           if (!await this.browser.set(cookieDetails(cookie))) throw new Error('restore failed');
         }
         if (await this.probe() !== oldIdentity) throw new Error('identity mismatch');
