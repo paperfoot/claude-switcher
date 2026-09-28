@@ -49,7 +49,9 @@ Chrome requires a user to load an unpacked extension. The installer does not cha
 
 Pin the companion if you want to switch from Chrome too. **Settings → Set up switching…** opens the setup guide.
 
-Until Chrome is connected, selection switches Code and explicitly reports **Chrome needs setup**. It only reports **Chrome and Code switched** after both sides verify the selected email. If an installed companion rejects a saved session, the coordinator tries to restore the previous Code account and reports the failure.
+After updating the app and rerunning the setup script, open `chrome://extensions` and click **Reload** on **Claude Switcher Companion**. Chrome can retain an unpacked extension's old code even after a browser restart. Your saved accounts stay in Keychain.
+
+If Chrome is closed, selection switches Code immediately. When the companion reconnects, it restores the pending selection from the saved browser login. If that login has expired, sign in again through **Add another account**. The app only reports **Chrome and Code switched** after both sides verify the selected email. If the companion rejects a selection, the coordinator tries to restore the previous Code account and reports the failure.
 
 ## Usage at a glance
 
@@ -84,7 +86,7 @@ Settings and usage cache live in `~/.config/claude-switcher/`, with private file
 
 ```sh
 swift test
-node --test browser-extension/session-core.test.js
+node --test browser-extension/*.test.js
 python3 -m unittest discover -s bridge -p 'test_*.py'
 swift build -c release
 CODESIGN_IDENTITY=- scripts/bundle.sh
