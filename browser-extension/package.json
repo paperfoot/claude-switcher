@@ -1,0 +1,1 @@
+{"type":"module","scripts":{"test":"node --test session-core.test.js"},"private":true}

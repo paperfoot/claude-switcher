@@ -7,11 +7,13 @@ claude-switcher — open Claude accounts from the menu bar.
 USAGE
   claude-switcher             Run the menu bar app.
   claude-switcher --accounts  Print verified Claude Code account summaries as JSON.
+  claude-switcher --switch EMAIL  Select an account for Chrome and ordinary Claude Code.
+  claude-switcher --switch-status Print coordinated account state as JSON.
   claude-switcher --usage     Fetch verified usage percentages and reset times as JSON.
   claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
 
-Click an email to open Claude Code. A Sign in badge means that account needs a login.
+After coordinated setup, click an email to select it for Chrome and the next Claude Code launch.
 Tiny gauges show usage consumed, with exact reset times from Anthropic.
 Desktop profiles and their local usage history are available in the Desktop submenu.
 Desktop and terminal sign-ins are separate.
@@ -31,6 +33,15 @@ private func readAccounts(_ config: Config) -> [String: AccountStatus] {
 private func runAccounts() -> Int32 {
     do {
         let config = try Config.load()
+        if let setup = CoordinatedSetup.load(), setup.enabled {
+            let snapshot = try CoordinatedSwitching.snapshot(setup: setup)
+            let rows: [[String: Any]] = snapshot.accounts.map { account in
+                ["email": account.email, "state": "saved", "active": account.email == snapshot.codeEmail,
+                 "usageStatus": account.usageStatus, "chromeActive": account.email == snapshot.browser.email]
+            }
+            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys]))
+            print(); return 0
+        }
         let statuses = readAccounts(config)
         let rows: [[String: Any]] = config.profiles.map { profile in
             let status = statuses[profile.id] ?? .unavailable
@@ -129,6 +140,29 @@ let commandLineArguments = CommandLine.arguments.dropFirst()
 if commandLineArguments.contains("--help") || commandLineArguments.contains("-h") {
     print(usageText)
     exit(0)
+}
+
+if let index = commandLineArguments.firstIndex(of: "--switch"),
+   commandLineArguments.index(after: index) < commandLineArguments.endIndex {
+    guard let setup = CoordinatedSetup.load(), setup.enabled else {
+        FileHandle.standardError.write(Data("Set up coordinated switching first.\n".utf8)); exit(1)
+    }
+    let email = commandLineArguments[commandLineArguments.index(after: index)]
+    do {
+        let result = try CoordinatedSwitching.select(email: email, setup: setup)
+        let output: [String: Any] = ["ok": result.ok, "codeEmail": result.codeEmail ?? "",
+                                     "browserReady": result.browserReady ?? false, "message": result.summary]
+        FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: output, options: [.prettyPrinted]))
+        print(); exit(result.ok ? 0 : 1)
+    } catch { FileHandle.standardError.write(Data("Switch failed.\n".utf8)); exit(1) }
+}
+
+if commandLineArguments.contains("--switch-status"), let setup = CoordinatedSetup.load() {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: setup.python)
+    process.arguments = [setup.helper, "snapshot"]
+    do { try process.run(); process.waitUntilExit(); exit(process.terminationStatus) }
+    catch { exit(1) }
 }
 
 if commandLineArguments.contains("--accounts") {

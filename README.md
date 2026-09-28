@@ -1,107 +1,99 @@
 # Claude Switcher
 
-**Your Claude accounts, one click away.**
+**Choose an account once. Use it in Chrome and Claude Code.**
 
-Open Claude Code as the right account and see its usage before you start. A small native macOS menu bar app, written in Swift and AppKit, with no third-party packages.
+A small native macOS menu bar app with compact five-hour and weekly usage gauges. Selecting an email changes the account used by your next ordinary `claude` or `claude --resume` command. The Chrome companion switches Claude.ai in the same browser profile.
 
 <p>
-  <img src="assets/usage-light.png" width="320" alt="Light appearance: three example accounts with compact battery gauges, usage percentages, and reset times">
-  <img src="assets/usage-dark.png" width="320" alt="Dark appearance of the same account menu">
+  <img src="assets/usage-light.png" width="320" alt="Compact Claude account usage gauges in light appearance">
+  <img src="assets/usage-dark.png" width="320" alt="Compact Claude account usage gauges in dark appearance">
 </p>
 
-<sub>Interface previews rendered with the app’s usage view. Account names and readings are examples.</sub>
+<sub>Usage-view previews with example accounts. The coordinated menu adds an active-account checkmark and Chrome connection status.</sub>
 
-## What you get
+## The workflow
 
-- **An email for every account.** The app verifies the signed-in identity before opening Claude Code.
-- **Separate sessions.** Each added account keeps its own login, settings, and history. Existing terminal sessions keep running.
-- **Usage at a glance.** Tiny battery gauges show five-hour and weekly usage, with percentages and reset times in your local timezone.
-- **A compact menu.** Click an email to open Code. Account management and other options live under Settings.
-- **Desktop profiles too.** Open separate Claude Desktop profiles from the Desktop submenu.
+1. Choose an email in the menu bar.
+2. Claude.ai uses that account in your connected Chrome profile.
+3. In your existing Ghostty, iTerm2, or other terminal, stop Code when ready and run `claude --resume` or `claude --continue`.
 
-Usage means **percentage consumed**. Green is below 70%, amber is 70–89%, and red is 90% or higher. Unknown readings stay gray.
+Switching does not open a terminal. Your working directory, normal `~/.claude` history, and setup stay in place. Already-running Code sessions are not stopped; restarting them is the reliable way to use the selected account immediately. Claude's own credential cache can delay changes inside a running process.
+
+Code and Chrome have separate credentials. The switcher coordinates them; it does not run `/login` on every switch. Initial authorization is required once per account, and expired or revoked logins may need authorization again.
 
 ## Install
 
-You need **macOS 14 or later**, a **Swift 6 toolchain**, and [Claude Code](https://code.claude.com/docs/en/setup) installed. Claude Desktop is optional.
-
-Build on the Mac you plan to use:
+Requires **macOS 14+**, a **Swift 6 toolchain**, [Claude Code](https://code.claude.com/docs/en/setup), and [uv](https://docs.astral.sh/uv/getting-started/installation/) for the account backend.
 
 ```sh
 git clone https://github.com/paperfoot/claude-switcher.git
 cd claude-switcher
+uv tool install 'claude-swap==0.26.0'
 CODESIGN_IDENTITY=- make install
+python3 scripts/setup-coordinated.py
 open -a "Claude Switcher"
 ```
 
-The build is signed locally. This fork does not currently provide a notarized download. Quit an older copy before replacing it.
+Quit an older copy before replacing it. This is a local build, signed on your Mac; this fork does not currently provide a notarized download.
 
-## Add your accounts
+The setup script imports the Code accounts already configured in `~/.config/claude-switcher/config.json`. It registers the local Chrome companion host and leaves the active Code account unchanged. It never overwrites an account already saved in the backend. Existing authenticated profiles can be configured with `expectedEmail` and `credDir`; both Claude directory selectors must refer to the directory used when that profile signed in.
 
-1. Click the people icon in the menu bar. Your existing default Claude Code account appears automatically.
-2. Choose **Add account…**, enter an email, and complete Claude’s sign-in flow.
-3. Click that email whenever you want to open a session with it.
+### Connect Chrome once
 
-Repeat for your other accounts. Enable **Settings → Launch at Login** to keep the switcher available after restarting your Mac.
+Chrome requires a user to load an unpacked extension. The installer does not change browser policies or force-install anything.
 
-A **Sign in** badge means that profile needs authentication. If Claude reports a different email, the app asks you to sign in to the expected account before opening a session.
+1. Open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
+2. Select `~/Library/Application Support/Claude Switcher/BrowserExtension`.
+3. Sign in to a configured account at Claude.ai. The companion saves it automatically; its popup shows the detected email and also offers **Save this Claude login**.
+4. Choose **Add another account** in the companion, then sign in to the next account. This clears the browser session locally without calling Claude’s logout endpoint, so saved sessions are not intentionally revoked. Repeat once per configured account.
 
-**Claude Code and Claude Desktop have separate sign-ins.** The main menu shows verified Code accounts. Desktop profile names do not establish which account is signed in inside the Desktop app.
+Pin the companion if you want to switch from Chrome too. **Settings → Set up switching…** opens the setup guide.
 
-## How it works
+Until Chrome is connected, selection switches Code and explicitly reports **Chrome needs setup**. It only reports **Chrome and Code switched** after both sides verify the selected email. If an installed companion rejects a saved session, the coordinator tries to restore the previous Code account and reports the failure.
 
-The switcher asks the installed Claude Code CLI for account identity and usage. Claude handles authentication and token refresh; the switcher does not read or copy tokens.
+## Usage at a glance
 
-Usage checks send no model prompt. Tools, hooks, MCP servers, and transcript scanning are disabled for those checks. Readings refresh in the background every five minutes, at a known reset, and when due after your Mac wakes. Failed requests back off for fifteen minutes.
+Tiny battery gauges show **percentage consumed**, with reset times in your timezone. Green is below 70%, amber is 70–89%, and red is 90% or higher.
 
-The last reading appears immediately, including after restarting the app. Older readings stay visible in gray with a **cached** label while refreshing; a passed reset is marked **Previous · reset passed** until Claude returns the new window. Cached readings expire after seven days and are cleared when sign-out or a different account is detected.
+Readings refresh in the background about every five minutes and when due after wake. Cached values survive restarts and stay visible in gray while refreshing. A passed reset is marked **Previous · reset passed**, rather than inventing a fresh zero. Cached readings expire after seven days.
 
-New Code profiles set both `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` to their own directory. Inherited authentication and provider overrides are cleared before checking or opening an account. Your default Claude data stays in place.
+## How switching works
 
-<details>
-<summary>Local files and diagnostics</summary>
+- **Code:** [claude-swap 0.26.0](https://github.com/realiti4/claude-swap/releases/tag/v0.26.0) saves and restores the default Claude Code credentials and account metadata, cooperating with Claude's credential locks. Code keeps using its usual history directory. The backend handles token refresh and usage collection.
+- **Chrome:** a Manifest V3 extension saves Claude.ai sessions in the Mac's **Keychain**, through a local native-messaging host. It verifies the current email before saving, checks the restored email after switching, and restores the previous cookies if switching fails. No cookies are saved in extension storage or exported by diagnostics.
+- **Connection:** a private local Unix socket connects the menu app to Chrome's native host. The host accepts the companion's exact extension origin. There is no listening network port or remote debugging connection.
 
-| Data | Location |
-| --- | --- |
-| Switcher settings | `~/.config/claude-switcher/config.json` |
-| Cached usage | `~/.config/claude-switcher/usage-cache.json` |
-| Added Code profiles | `~/.claude-accounts/<profile-id>` |
-| Terminal launch documents | `~/Library/Application Support/Claude Switcher/Launchers` |
-| Added Desktop profiles | `~/Library/Application Support/Claude-<profile-id>` |
+The extension touches Claude.ai cookies only. It does not switch Google accounts, Gmail, or unrelated sites. All Claude.ai tabs within the connected Chrome profile share the selected login; switching can reload them. Claude Desktop still has a separate sign-in and remains under the Desktop submenu.
 
-Settings and cached usage use file permissions `0600`; launcher directories and launch documents use `0700`.
+Claude's cookie and credential formats are not public compatibility contracts. Changes in Claude can require maintenance. Chrome switching is supported for one connected regular browser profile at a time.
 
-The installed binary provides JSON diagnostics:
+## Diagnostics
 
 ```sh
 APP="/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher"
-"$APP" --accounts  # Account identities and sign-in status
-"$APP" --usage     # Usage percentages and reset timestamps
-"$APP" --dry-run   # Desktop launch plans; launches nothing
+"$APP" --switch person@example.com
+"$APP" --switch-status
+"$APP" --accounts
 ```
 
-Diagnostics can contain email addresses and local paths. Redact them before posting an issue.
+Diagnostics contain account emails and usage, not tokens or cookies. Redact personal details before posting an issue. An `ok: true` result with `browserReady: false` means Code switched and Chrome still needs setup.
 
-</details>
-
-## Compatibility
-
-Verified with **Claude Code 2.1.283** and **Claude Desktop 2.9939.2** on 27 September 2026. Account usage was checked with three independently signed-in Max accounts.
-
-The credential-directory selector, structured usage request, and Desktop profile internals are undocumented Claude behavior. Claude updates may require changes here. Desktop usage comes from local history and has estimated reset times; the main menu reads current account usage through the CLI.
+Settings and usage cache live in `~/.config/claude-switcher/`, with private file permissions. The installed companion lives in `~/Library/Application Support/Claude Switcher/`. The Code backend manages its own account store under `~/.claude-swap-backup/`.
 
 ## Development
 
 ```sh
 swift test
+node --test browser-extension/session-core.test.js
+python3 -m unittest discover -s bridge -p 'test_*.py'
 swift build -c release
 CODESIGN_IDENTITY=- scripts/bundle.sh
 ```
 
-The current suite has 292 passing tests covering account isolation, identity mismatches, usage parsing, timeouts, and Desktop profile handling. See [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout and contribution notes.
+Tests cover account isolation, usage caching, identity verification, cookie restoration, rollback, concurrent selections, and native-message framing. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits and license
 
-Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau’s Claude Switcher](https://github.com/kevinchau/claude-switcher), with its original history and attribution preserved.
+Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau's Claude Switcher](https://github.com/kevinchau/claude-switcher), with original history and MIT attribution preserved. Coordinated Code switching uses [Onur Cetinkol's claude-swap](https://github.com/realiti4/claude-swap), also MIT licensed.
 
-This fork adds isolated Claude Code accounts, verified email labels, and compact live usage gauges. Licensed under [MIT](LICENSE). Not affiliated with Anthropic.
+Licensed under [MIT](LICENSE). Not affiliated with Anthropic.

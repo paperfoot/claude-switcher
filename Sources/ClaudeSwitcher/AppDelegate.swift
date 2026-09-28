@@ -22,6 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var usageFailures: Set<String> = []
     private var nextUsageRefresh: [String: Date] = [:]
     private var isFetchingUsage = false
+    private var coordinatedSnapshot: CoordinatedSnapshot?
+    private var switchMessage: String?
+    private var isSwitchingAccount = false
+    private var isReadingCoordinated = false
+    private var lastCoordinatedCheck: Date = .distantPast
+    private var coordinatedGeneration = 0
     private var usageRefreshTimer: Timer?
     private var isSleeping = false
 
@@ -68,6 +74,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         selectProfile: #selector(selectProfile(_:)),
         copyTerminalCommand: #selector(copyTerminalCommand(_:)),
         openTerminal: #selector(openTerminal(_:)),
+        switchAccount: #selector(switchAccount(_:)),
+        setupSwitching: #selector(setupSwitching(_:)),
         addProfile: #selector(addProfile(_:)),
         renameProfile: #selector(renameProfile(_:)),
         removeProfile: #selector(removeProfile(_:)),
@@ -194,7 +202,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             updateProgress: updateProgress,
             usage: usage,
             now: Date(),
-            autoReopenNotice: autoReopenNotice
+            autoReopenNotice: autoReopenNotice,
+            coordinated: CoordinatedSetup.load()?.enabled == true,
+            selectedEmail: coordinatedSnapshot?.codeEmail,
+            browserEmail: coordinatedSnapshot?.browser.email,
+            browserConnected: coordinatedSnapshot?.browser.ok == true,
+            switching: isSwitchingAccount,
+            switchMessage: switchMessage
         )
         if isMenuOpen, autoReopenNotice != nil { autoReopenNoticeWasShown = true }
         let built = MenuBuilder.build(input, target: self, actions: Self.actions)
@@ -250,6 +264,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Menu opens are throttled; the background schedule also checks identity before usage.
     private func refreshSignInStates(force: Bool = false) {
+        if let setup = CoordinatedSetup.load(), setup.enabled {
+            refreshCoordinatedAccounts(setup: setup, force: force)
+            return
+        }
         guard !isProbingSignIn, force || Date().timeIntervalSince(lastAccountCheck) >= 15 else { return }
         isProbingSignIn = true
         let profiles = config.profiles
@@ -297,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshLiveUsage() {
+        guard CoordinatedSetup.load()?.enabled != true else { return }
         guard !isFetchingUsage, !isSleeping else { return }
         let now = Date()
         let pending = config.profiles.compactMap { profile -> (Profile, String)? in
@@ -379,6 +398,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateUsageRows(_ menu: NSMenu) {
         MenuBuilder.updateLiveUsage(in: menu, config: config, statuses: accountStatuses,
                                     snapshots: liveUsage, failures: usageFailures)
+    }
+
+    // MARK: - Coordinated account selection
+
+    private func refreshCoordinatedAccounts(setup: CoordinatedSetup, force: Bool = false) {
+        guard !isReadingCoordinated, !isSwitchingAccount,
+              force || Date().timeIntervalSince(lastCoordinatedCheck) >= 30 else { return }
+        isReadingCoordinated = true
+        let generation = coordinatedGeneration
+        Task {
+            let result = await Task.detached(priority: .utility) { try? CoordinatedSwitching.snapshot(setup: setup) }.value
+            isReadingCoordinated = false
+            guard generation == coordinatedGeneration else {
+                refreshCoordinatedAccounts(setup: setup, force: true)
+                return
+            }
+            lastCoordinatedCheck = Date()
+            if let result {
+                coordinatedSnapshot = result
+                let now = Date()
+                for profile in config.profiles {
+                    guard let email = profile.expectedEmail,
+                          let row = result.accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { continue }
+                    accountStatuses[profile.id] = ["relogin_required", "no_credentials"].contains(row.usageStatus)
+                        ? .signedOut : .signedIn(email: row.email, plan: nil)
+                    if let reading = result.reading(email: email) { liveUsage[profile.id] = reading }
+                    if row.usageStatus == "ok" { usageFailures.remove(profile.id) }
+                    else { usageFailures.insert(profile.id) }
+                    nextUsageRefresh[profile.id] = now.addingTimeInterval(LiveUsagePolicy.refreshInterval)
+                }
+                persistUsageCache()
+            }
+            rebuildIfVisible()
+            scheduleUsageRefresh()
+        }
+    }
+
+    @objc private func switchAccount(_ sender: NSMenuItem) {
+        guard !isSwitchingAccount, let id = sender.representedObject as? String,
+              let email = config.profile(id: id)?.expectedEmail,
+              let setup = CoordinatedSetup.load(), setup.enabled else { return }
+        isSwitchingAccount = true
+        coordinatedGeneration += 1
+        switchMessage = "Switching…"
+        rebuildIfVisible()
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { try? CoordinatedSwitching.select(email: email, setup: setup) }.value
+            isSwitchingAccount = false
+            switchMessage = result?.summary ?? "Could not switch accounts · try again"
+            if result?.ok == true { statusItem?.button?.toolTip = "Claude: \(email)" }
+            refreshCoordinatedAccounts(setup: setup, force: true)
+            rebuildIfVisible()
+        }
+    }
+
+    @objc private func setupSwitching(_ sender: NSMenuItem) {
+        if let page = Bundle.main.url(forResource: "setup", withExtension: "html") {
+            NSWorkspace.shared.open(page)
+        }
     }
 
     // MARK: - Actions: profiles
@@ -551,7 +629,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func copyTerminalCommand(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
               let profile = config.profile(id: id) else { return }
-        let command = Diagnostics.terminalCommand(for: profile)
+        let command = CoordinatedSetup.load()?.enabled == true ? "claude --resume" : Diagnostics.terminalCommand(for: profile)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
     }
