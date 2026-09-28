@@ -69,7 +69,9 @@ enum MenuBuilder {
     static func build(_ input: Input, target: AnyObject, actions: Actions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(informationalItem(input.coordinated ? "Claude" : "Claude Code"))
+        menu.minimumWidth = UsageBarView.preferredWidth
+        menu.showsStateColumn = true
+        menu.addItem(sectionItem(input.coordinated ? "Claude" : "Claude Code"))
         if input.configError != nil {
             menu.addItem(informationalItem("Settings could not be loaded"))
         }
@@ -88,14 +90,14 @@ enum MenuBuilder {
                                        now: input.now))
         }
         if input.coordinated {
-            if let message = input.switchMessage { menu.addItem(informationalItem(message)) }
+            if let message = input.switchMessage { menu.addItem(detailItem(message, id: "claude.status")) }
             else if !input.browserConnected || input.browserEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") != .orderedSame {
                 menu.addItem(actionItem(input.browserConnected ? "Connect this Chrome account…" : "Connect Chrome…", action: actions.setupSwitching, target: target))
             }
         }
         if !input.codexAccounts.isEmpty {
             menu.addItem(.separator())
-            menu.addItem(informationalItem("Codex"))
+            menu.addItem(sectionItem("Codex"))
             for account in input.codexAccounts {
                 let item = actionItem(account.email, action: actions.selectCodexAccount, target: target)
                 item.representedObject = account.email
@@ -108,13 +110,15 @@ enum MenuBuilder {
                 menu.addItem(item)
                 if account.connected { menu.addItem(codexUsageItem(account, now: input.now)) }
             }
-            if let message = input.codexMessage { menu.addItem(informationalItem(message)) }
+            if let message = input.codexMessage { menu.addItem(detailItem(message, id: "codex.status")) }
             if input.codexConnecting {
-                menu.addItem(actionItem("Cancel sign-in", action: actions.cancelCodexLogin, target: target))
+                let cancel = actionItem("Cancel sign-in", action: actions.cancelCodexLogin, target: target)
+                cancel.identifier = NSUserInterfaceItemIdentifier("codex.cancel-login")
+                menu.addItem(cancel)
             }
         }
         menu.addItem(.separator())
-        menu.addItem(actionItem(input.coordinated ? "Connect accounts…" : "Add account…", action: input.coordinated ? actions.setupSwitching : actions.addProfile, target: target))
+        menu.addItem(actionItem(input.coordinated ? "Connect Claude…" : "Add Claude account…", action: input.coordinated ? actions.setupSwitching : actions.addProfile, target: target))
 
         let desktop = NSMenu()
         desktop.autoenablesItems = false
@@ -144,7 +148,7 @@ enum MenuBuilder {
             desktop.addItem(.separator())
             desktop.addItem(actionItem("Install Claude \(update.staged)…", action: actions.installUpdate, target: target))
         }
-        menu.addItem(submenuItem("Desktop", menu: desktop))
+        menu.addItem(submenuItem("Claude Desktop", menu: desktop))
 
         let settings = NSMenu()
         settings.autoenablesItems = false
@@ -172,7 +176,7 @@ enum MenuBuilder {
             item.toolTip = "Remove from this menu. Account data stays on this Mac."
             remove.addItem(item)
         }
-        settings.addItem(actionItem("Set up switching…", action: actions.setupSwitching, target: target))
+        settings.addItem(actionItem("Set up Claude switching…", action: actions.setupSwitching, target: target))
         settings.addItem(submenuItem("Copy terminal command", menu: commands))
         settings.addItem(submenuItem("Rename desktop profile", menu: rename))
         settings.addItem(submenuItem("Remove account", menu: remove))
@@ -203,7 +207,62 @@ enum MenuBuilder {
         quit.isEnabled = input.updateProgress == nil
         settings.addItem(quit)
         menu.addItem(submenuItem("Settings", menu: settings))
+        let padding = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        padding.view = MenuDetailView(text: "", height: 3)
+        padding.isEnabled = false
+        menu.addItem(padding)
         return menu
+    }
+
+    /// Tracking menus retain their exact item/view instances and dimensions. Structural
+    /// changes, titles and badges are applied on the next opening, never under the pointer.
+    static func updateVisible(in menu: NSMenu, input: Input) {
+        for profile in input.config.profiles {
+            guard let item = menu.items.first(where: { $0.identifier == profileItemIdentifier(profile.id) }) else { continue }
+            if input.coordinated {
+                item.state = profile.expectedEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") == .orderedSame ? .on : .off
+                item.isEnabled = !input.switching && !input.codexBusy
+            } else {
+                item.isEnabled = input.accountStatuses[profile.id] != nil
+                item.toolTip = AccountPresentation(profile: profile, status: input.accountStatuses[profile.id]).help
+            }
+        }
+        updateLiveUsage(in: menu, config: input.config, statuses: input.accountStatuses,
+                        snapshots: input.liveUsage, failures: input.usageFailures, now: input.now)
+        for account in input.codexAccounts {
+            let id = NSUserInterfaceItemIdentifier("codex.account.\(account.email)")
+            if let item = menu.items.first(where: { $0.identifier == id }) {
+                item.state = account.active ? .on : .off
+                // Keep the displayed Connect badge and its click behavior consistent until reopening.
+                let connectionUnchanged = (item.badge == nil) == account.connected
+                item.isEnabled = connectionUnchanged && !input.codexBusy && !input.switching
+            }
+            let updated = codexUsageItem(account, now: input.now)
+            if let existing = menu.items.first(where: { $0.identifier == updated.identifier }),
+               let current = existing.view as? UsageBarView, let replacement = updated.view as? UsageBarView {
+                current.update(rows: replacement.rows)
+                current.toolTip = replacement.toolTip
+                current.setAccessibilityLabel(replacement.accessibilityLabel())
+            }
+        }
+        menu.items.first { $0.identifier?.rawValue == "codex.cancel-login" }?.isEnabled = input.codexConnecting
+        for (id, text) in [("claude.status", input.switchMessage), ("codex.status", input.codexMessage)] {
+            let item = menu.items.first { $0.identifier?.rawValue == id }
+            (item?.view as? MenuDetailView)?.update(text: text ?? "")
+        }
+    }
+
+    private static func sectionItem(_ text: String) -> NSMenuItem {
+        let item = informationalItem(text)
+        item.view = MenuDetailView(text: text, section: true)
+        return item
+    }
+
+    private static func detailItem(_ text: String, id: String) -> NSMenuItem {
+        let item = informationalItem("")
+        item.identifier = NSUserInterfaceItemIdentifier(id)
+        item.view = MenuDetailView(text: text)
+        return item
     }
 
     private static func actionItem(_ title: String, action: Selector, target: AnyObject,
@@ -250,8 +309,10 @@ enum MenuBuilder {
         let details = rows.map { "\($0.label): \($0.percent.map { "\($0)% used" } ?? "unavailable"), \($0.trailing ?? "sign in first")" }.joined(separator: ". ")
         let checked = snapshot.map { " Last checked \(clock($0.fetchedAt, now: now))." } ?? ""
         view.toolTip = details + checked
-        view.setAccessibilityElement(false)
-        let item = informationalItem("\(profile.expectedEmail ?? status?.email ?? profile.label). \(details)\(checked)")
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.staticText)
+        view.setAccessibilityLabel("\(profile.expectedEmail ?? status?.email ?? profile.label). \(details)\(checked)")
+        let item = informationalItem("Usage")
         item.view = view
         item.identifier = NSUserInterfaceItemIdentifier("claude-switcher.live-usage.\(profile.id)")
         return item
@@ -273,8 +334,10 @@ enum MenuBuilder {
             (value?.resetsAt.map { ", resets \(clock($0, now: now))" } ?? "")
         }.joined(separator: ". ")
         view.toolTip = details + (snapshot.map { ". Updated \(clock($0.fetchedAt, now: now))" } ?? ". Refreshing…") + (cached ? ". Cached" : "")
-        view.setAccessibilityElement(false)
-        let item = informationalItem("\(account.email). \(view.toolTip ?? "")")
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.staticText)
+        view.setAccessibilityLabel("\(account.email). \(view.toolTip ?? "")")
+        let item = informationalItem("Usage")
         item.view = view
         item.identifier = NSUserInterfaceItemIdentifier("codex.usage.\(account.email)")
         return item
@@ -288,17 +351,15 @@ enum MenuBuilder {
     }
 
     static func updateLiveUsage(in menu: NSMenu, config: Config, statuses: [String: AccountStatus],
-                                snapshots: [String: LiveUsageSnapshot], failures: Set<String>) {
+                                snapshots: [String: LiveUsageSnapshot], failures: Set<String>, now: Date = Date()) {
         for profile in config.profiles {
             let updated = liveUsageItem(profile: profile, status: statuses[profile.id], snapshot: snapshots[profile.id],
-                                        failed: failures.contains(profile.id), now: Date())
+                                        failed: failures.contains(profile.id), now: now)
             guard let existing = menu.items.first(where: { $0.identifier == updated.identifier }) else { continue }
-            existing.title = updated.title
             if let current = existing.view as? UsageBarView, let replacement = updated.view as? UsageBarView {
                 current.update(rows: replacement.rows)
                 current.toolTip = replacement.toolTip
-            } else {
-                existing.view = updated.view
+                current.setAccessibilityLabel(replacement.accessibilityLabel())
             }
         }
     }
@@ -328,8 +389,7 @@ enum MenuBuilder {
         NSUserInterfaceItemIdentifier("claude-switcher.usage.\(profileID)")
     }
 
-    /// The drawn usage rows under a profile. A view item never draws its title, so the title
-    /// carries the sentence VoiceOver reads; the view itself is not an accessibility element.
+    /// Accessibility details belong to the view, outside NSMenu's intrinsic title sizing.
     static func usageItem(for profile: Profile, reading: UsageReading, now: Date) -> NSMenuItem {
         let time: (Date) -> String = { clock($0, now: now) }
         let rows = reading.rows.map { row in
@@ -342,9 +402,11 @@ enum MenuBuilder {
         }
         let view = UsageBarView(rows: rows)
         view.toolTip = UsageText.tooltip(reading, time: time)
-        view.setAccessibilityElement(false)
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.staticText)
+        view.setAccessibilityLabel(UsageText.accessibilityText(reading, profileLabel: profile.label, time: time))
 
-        let item = NSMenuItem(title: UsageText.accessibilityText(reading, profileLabel: profile.label, time: time),
+        let item = NSMenuItem(title: "Usage",
                               action: nil, keyEquivalent: "")
         item.view = view
         item.isEnabled = false
@@ -364,14 +426,6 @@ enum MenuBuilder {
         item.badge = presentation.badge.map { NSMenuItemBadge(string: $0) }
         item.toolTip = presentation.help
         item.isEnabled = status != nil
-    }
-
-    /// Update existing rows without moving anything under the pointer.
-    static func updateAccounts(in menu: NSMenu, config: Config, statuses: [String: AccountStatus]) {
-        for profile in config.profiles {
-            guard let item = menu.items.first(where: { $0.identifier == profileItemIdentifier(profile.id) }) else { continue }
-            applyAccount(to: item, profile: profile, status: statuses[profile.id])
-        }
     }
 
     static func informationalItem(_ text: String) -> NSMenuItem {

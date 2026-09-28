@@ -10,7 +10,7 @@ final class UsageBarView: NSView {
 
     struct Row: Sendable {
         let label: String
-        /// `nil` renders as an em dash: the period has ended and the number is stale.
+        /// `nil` renders as an em dash when the provider has no reading for this window.
         let percent: Int?
         let level: UsageLevel
         let trailing: String?
@@ -19,7 +19,8 @@ final class UsageBarView: NSView {
 
     /// Where item titles start in a menu with a state column, so the rows line up with the
     /// profile label above them.
-    private static let titleInset: CGFloat = 21
+    static let titleInset: CGFloat = 30
+    static let preferredWidth: CGFloat = 407
     private static let rightInset: CGFloat = 14
     private static let rowHeight: CGFloat = 22
     private static let labelWidth: CGFloat = 36
@@ -29,7 +30,7 @@ final class UsageBarView: NSView {
 
     private(set) var rows: [Row]
 
-    init(rows: [Row], width: CGFloat = 398) {
+    init(rows: [Row], width: CGFloat = UsageBarView.preferredWidth) {
         self.rows = rows
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowHeight))
         autoresizingMask = [.width]
