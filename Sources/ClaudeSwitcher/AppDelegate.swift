@@ -165,7 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - NSMenuDelegate
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        isMenuOpen = true
+        guard !isMenuOpen else {
+            MenuBuilder.updateVisible(in: menu, input: menuInput())
+            return
+        }
         reloadConfig()
         running = InstanceManager.runningInstances(appPath: config.claudeAppPath)
         // Read-only and quick: one small JSON file, two Info.plists, a process-name scan.
@@ -190,6 +193,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return readings
     }
 
+    func menuWillOpen(_ menu: NSMenu) {
+        // Apply deferred structural changes before tracking starts, regardless of whether
+        // AppKit requested a separate update for this opening.
+        if !isMenuOpen { rebuild(menu) }
+        isMenuOpen = true
+        if autoReopenNotice != nil { autoReopenNoticeWasShown = true }
+    }
+
     func menuDidClose(_ menu: NSMenu) {
         isMenuOpen = false
         if autoReopenNoticeWasShown {   // only once it has actually been on screen
@@ -198,8 +209,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func rebuild(_ menu: NSMenu) {
-        let input = MenuBuilder.Input(
+    private func menuInput() -> MenuBuilder.Input {
+        MenuBuilder.Input(
             config: config,
             running: running,
             accountStatuses: accountStatuses,
@@ -225,8 +236,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switching: isSwitchingAccount,
             switchMessage: switchMessage
         )
-        if isMenuOpen, autoReopenNotice != nil { autoReopenNoticeWasShown = true }
-        let built = MenuBuilder.build(input, target: self, actions: Self.actions)
+    }
+
+    private func rebuild(_ menu: NSMenu) {
+        guard !isMenuOpen else {
+            MenuBuilder.updateVisible(in: menu, input: menuInput())
+            return
+        }
+        let built = MenuBuilder.build(menuInput(), target: self, actions: Self.actions)
+        menu.minimumWidth = built.minimumWidth
+        menu.showsStateColumn = true
         // An NSMenuItem belongs to one menu, so detach before re-parenting.
         let items = built.items
         built.removeAllItems()
@@ -237,7 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func rebuildIfVisible() {
         guard isMenuOpen, let menu = statusItem?.menu else { return }
-        rebuild(menu)
+        MenuBuilder.updateVisible(in: menu, input: menuInput())
     }
 
     // MARK: - Config
@@ -323,8 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         persistUsageCache()
         if isMenuOpen, let menu = statusItem?.menu {
-            MenuBuilder.updateAccounts(in: menu, config: config, statuses: states)
-            updateUsageRows(menu)
+            MenuBuilder.updateVisible(in: menu, input: menuInput())
         }
         refreshLiveUsage()
     }
@@ -411,8 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateUsageRows(_ menu: NSMenu) {
-        MenuBuilder.updateLiveUsage(in: menu, config: config, statuses: accountStatuses,
-                                    snapshots: liveUsage, failures: usageFailures)
+        MenuBuilder.updateVisible(in: menu, input: menuInput())
     }
 
     // MARK: - Coordinated account selection

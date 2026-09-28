@@ -5,8 +5,8 @@
 A small native macOS menu bar app with separate Claude and Codex sections. Claude selection coordinates Claude Code with Claude.ai in Chrome. Codex selection changes the ordinary Codex Desktop and CLI login. Five-hour and weekly usage share one compact line, separated by `|`.
 
 <p>
-  <img src="assets/usage-light.png" width="398" alt="Claude and Codex accounts with one line of rounded usage gauges in light appearance">
-  <img src="assets/usage-dark.png" width="398" alt="Claude and Codex accounts with one line of rounded usage gauges in dark appearance">
+  <img src="assets/usage-light.png" width="407" alt="Claude and Codex accounts with one line of rounded usage gauges in light appearance">
+  <img src="assets/usage-dark.png" width="407" alt="Claude and Codex accounts with one line of rounded usage gauges in dark appearance">
 </p>
 
 <sub>Component previews with example accounts. Available usage windows depend on the provider.</sub>
@@ -87,7 +87,7 @@ If Chrome is closed, selection switches Code immediately. When the companion rec
 
 Tiny rounded gauges show the five-hour and weekly **percentage consumed** on the same line, with a `|` separator and reset times in your timezone. Green is below 70%, amber is 70–89%, and red is 90% or higher. A limit that the provider does not return is unavailable (`—` in the gauge), not zero.
 
-Readings refresh in the background about every five minutes and when due after wake. Cached values survive restarts and stay visible in gray while refreshing. A passed reset is marked as due rather than inventing a fresh zero. Cached readings expire after seven days.
+Readings refresh in the background about every five minutes and when due after wake. While the menu is open, values update in place; its width, row positions and account labels stay fixed. Cached values survive restarts and stay visible in gray while refreshing. A passed reset is marked as due rather than inventing a fresh zero. Cached readings expire after seven days.
 
 ## How switching works
 
@@ -116,6 +116,7 @@ Settings and usage cache live in `~/.config/claude-switcher/`, with private file
 
 ```sh
 swift test
+scripts/check-menu-refresh.sh
 node --test browser-extension/*.test.js
 python3 -m unittest discover -s bridge -p 'test_*.py'
 swift build -c release
