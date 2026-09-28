@@ -37,6 +37,14 @@ def atomic_json(path, value):
         if os.path.exists(name): os.unlink(name)
 
 
+def read_state():
+    try:
+        value = json.loads(STATE.read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def configured_emails():
     data = json.loads((BASE / 'config.json').read_text())
     return {p['expectedEmail'].lower() for p in data['profiles'] if p.get('expectedEmail')}
@@ -48,7 +56,7 @@ def validate_email(email):
     return email.lower()
 
 
-def run_backend(*args, timeout=100):
+def run_backend(*args, timeout=60):
     result = subprocess.run([configuration()['cswap'], *args], env=clean_environment(),
                             stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     if result.returncode != 0:
@@ -74,7 +82,7 @@ def switch_code(email):
 
 def browser_request(command, email=None):
     from native_transport import send_request
-    result = send_request(str(SOCKET), command, email, timeout=65)
+    result = send_request(str(SOCKET), command, email, timeout=170)
     if result.get('error') == 'host_unavailable':
         return {'ok': False, 'error': 'browser_missing', 'accounts': []}
     return result
@@ -87,7 +95,7 @@ def browser_state():
         return {'ok': False, 'error': 'browser_missing', 'accounts': []}
 
 
-def select_account(email, include_browser=True):
+def select_account(email, include_browser=True, verified_browser=False):
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(BASE / 'switch.lock', 'a') as lock:
@@ -104,16 +112,23 @@ def select_account(email, include_browser=True):
                 try: switch_code(old)
                 except Exception: return {'ok': False, 'error': 'code_restore_failed'}
             return {'ok': False, 'error': 'code_switch_failed'}
-        web = {'ok': False, 'error': 'browser_missing'}
+        web = {'ok': True, 'email': email} if verified_browser else {'ok': False, 'error': 'browser_missing'}
         if include_browser:
             try: web = browser_request('switch', email)
-            except (OSError, TimeoutError, ValueError): pass
+            except FileNotFoundError: pass
+            except (OSError, TimeoutError, ValueError):
+                web = {'ok': False, 'error': 'web_unavailable'}
+            if web.get('ok') and web.get('email') != email:
+                web = {'ok': False, 'error': 'web_identity_mismatch'}
             # An installed companion rejecting a target must not leave Code on a different account.
             if not web.get('ok') and web.get('error') != 'browser_missing':
                 if old and old != email:
                     try: switch_code(old)
                     except Exception: return {'ok': False, 'error': 'code_restore_failed'}
                 result = {'ok': False, 'error': web.get('error', 'web_unavailable'), 'codeEmail': old}
+                if old is None:
+                    # There was no signed-in Code account to restore. Report the actual state.
+                    result.update(error='code_only_after_web_failure', codeEmail=email, browserReady=False)
                 atomic_json(STATE, result)
                 return result
         result = {'ok': True, 'codeEmail': email, 'webEmail': web.get('email') if web.get('ok') else None,
@@ -126,7 +141,7 @@ def select_account(email, include_browser=True):
 def snapshot():
     data = run_backend('list', '--json')
     # Account and usage metadata only. Secret values never cross this interface.
-    state = json.loads(STATE.read_text()) if STATE.exists() else {}
+    state = read_state()
     data['codeEmail'] = code_identity()
     data['browser'] = browser_state()
     data['lastSwitch'] = state
@@ -160,13 +175,25 @@ def handle_native(message):
         if action == 'vault_list':
             emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
             return {'ok': True, 'accounts': [e for e in emails if e in configured_emails()]}
+        if action == 'pending_selection':
+            state = read_state()
+            email = state.get('codeEmail')
+            pending = state.get('ok') and state.get('browserReady') is False
+            return {'ok': True, 'email': email if pending and email in configured_emails() and code_identity() == email else None}
+        if action == 'browser_ready':
+            email = validate_email(message.get('email'))
+            with open(BASE / 'switch.lock', 'a') as lock:
+                try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
+                state = read_state()
+                if state.get('codeEmail') != email or code_identity() != email:
+                    return {'ok': False, 'error': 'selection_changed'}
+                state.update(browserReady=True, webEmail=email, message='Chrome and Code switched')
+                atomic_json(STATE, state)
+            return {'ok': True}
         if action == 'select':
             # The extension has already switched and verified Chrome; don't ask it recursively.
-            result = select_account(message.get('email'), include_browser=False)
-            if result.get('ok'):
-                result.update(browserReady=True, webEmail=result['codeEmail'], message='Chrome and Code switched')
-                atomic_json(STATE, result)
-            return result
+            return select_account(message.get('email'), include_browser=False, verified_browser=True)
         return {'ok': False, 'error': 'unknown_action'}
     except Exception:
         return {'ok': False, 'error': 'Account could not be saved or opened. Unlock your Keychain and try again.'}

@@ -59,7 +59,9 @@ export class SessionSwitcher {
     return {ok:true};
   }); }
   status() { return this.serialize(async () => ({ok:true,email:await this.probe(),accounts:await this.vault.list()})); }
-  switchTo(email) { return this.serialize(async () => {
+  switchTo(email, activateCode = null, expiresAt = Infinity) { return this.serialize(async () => {
+    const expired = () => Date.now() >= expiresAt;
+    if (expired()) return {ok:false,error:'browser_timeout',email};
     email = emailKey(email);
     const target = await this.vault.get(email);
     if (!target || emailKey(target.email) !== email) return {ok:false,error:'web_login_needed',email};
@@ -72,14 +74,30 @@ export class SessionSwitcher {
       const captured = await this.capture();
       oldIdentity = captured.email;
       await this.vault.put(captured);
-      if (oldIdentity === email) return {ok:true,email};
+      if (expired()) return {ok:false,error:'browser_timeout',email};
+      if (oldIdentity === email) {
+        try {
+          if (activateCode && (await activateCode(email))?.ok === false) throw new Error('Code activation failed');
+        } catch { return {ok:false,error:'code_switch_failed',email}; }
+        return {ok:true,email};
+      }
     }
+    let failure = 'web_switch_failed';
     try {
+      if (expired()) return {ok:false,error:'browser_timeout',email};
       await this.browser.clear();
       for (const cookie of details) {
+        if (expired()) throw new Error('Switch timed out');
         if (!await this.browser.set(cookie)) throw new Error('Cookie restoration failed');
       }
       if (await this.probe() !== email) throw new Error('Restored account could not be verified');
+      if (expired()) throw new Error('Switch timed out');
+      // Keep the browser transaction locked until Code has committed or rolled back.
+      // A menu selection must not interleave with a popup selection halfway through.
+      if (activateCode) {
+        failure = 'code_switch_failed';
+        if ((await activateCode(email))?.ok === false) throw new Error('Code activation failed');
+      }
     } catch {
       // Preserve the previous session if ANY restore or identity check failed.
       try {
@@ -87,9 +105,9 @@ export class SessionSwitcher {
         for (const cookie of previous) {
           if (!await this.browser.set(cookieDetails(cookie))) throw new Error('restore failed');
         }
-        if (oldIdentity && await this.probe() !== oldIdentity) throw new Error('identity mismatch');
+        if (await this.probe() !== oldIdentity) throw new Error('identity mismatch');
       } catch { return {ok:false,error:'web_restore_failed',email}; }
-      return {ok:false,error:'web_switch_failed',email};
+      return {ok:false,error:failure,email};
     }
     await this.browser.refresh(target.url);
     return {ok:true,email};

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -185,7 +186,11 @@ class NativeTransportTests(unittest.TestCase):
             client.sendall(
                 b'{"id":"switch-1","command":"switch","email":"one@example.com"}\n'
             )
-            self.assertEqual(_read_native(host.proc.stdout)["id"], "switch-1")
+            forwarded = _read_native(host.proc.stdout)
+            self.assertEqual(forwarded["id"], "switch-1")
+            remaining = forwarded["expiresAt"] / 1000 - time.time()
+            self.assertGreater(remaining, native_transport.CLIENT_REQUEST_TIMEOUT - 42)
+            self.assertLessEqual(remaining, native_transport.CLIENT_REQUEST_TIMEOUT - 40)
             host.write_native(
                 {"type": "result", "id": "someone-else", "result": {"ok": True}}
             )

@@ -158,6 +158,25 @@ test('successful switch restores B, verifies B, then refreshes', async () => {
   assert.ok(refreshed > verified, 'refresh happened only after target identity verification');
 });
 
+test('successful switch runs the code switch after browser verification and before refresh', async () => {
+  const rig = makeRig();
+  const activateCode = async email => {
+    rig.events.push(`code:switch:${email}`);
+    return {ok: true};
+  };
+
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, activateCode), {
+    ok: true,
+    email: EMAIL.B,
+  });
+
+  const verified = rig.events.lastIndexOf(`probe:${EMAIL.B}`);
+  const codeSwitched = rig.events.indexOf(`code:switch:${EMAIL.B}`);
+  const refreshed = rig.events.indexOf('browser:refresh:https://claude.ai/b');
+  assert.ok(codeSwitched > verified, 'code switch ran after the target browser identity was verified');
+  assert.ok(refreshed > codeSwitched, 'browser refresh ran after the code switch completed');
+});
+
 test('a manually changed C session is saved under C and never overwrites A', async () => {
   const originalA = savedSession('A', {savedAt: 12345, url: 'https://claude.ai/original-a'});
   const rig = makeRig({initialCookies: [sessionCookie('C')], entries: [originalA, savedSession('B')]});
@@ -235,6 +254,82 @@ test('a restored identity mismatch restores A and reports switch failure', async
   assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
 });
 
+test('a thrown code switch failure restores A and reports code_switch_failed', async () => {
+  const rig = makeRig();
+
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, async email => {
+    rig.events.push(`code:switch:${email}`);
+    throw new Error('code account unavailable');
+  }), {
+    ok: false,
+    error: 'code_switch_failed',
+    email: EMAIL.B,
+  });
+
+  assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
+  assert.ok(rig.events.indexOf(`code:switch:${EMAIL.B}`) > rig.events.indexOf(`probe:${EMAIL.B}`));
+  assert.equal(rig.events.filter(event => event === 'browser:clear').length, 2);
+  assert.equal(rig.events.includes(`probe:${EMAIL.A}`), true);
+  assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
+});
+
+test('an explicit code switch failure restores a signed-out browser state', async () => {
+  const signedOutCookies = [sessionCookie('dark', {name: 'preference', value: 'dark'})];
+  const rig = makeRig({initialCookies: signedOutCookies});
+
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, async email => {
+    rig.events.push(`code:switch:${email}`);
+    return {ok: false};
+  }), {
+    ok: false,
+    error: 'code_switch_failed',
+    email: EMAIL.B,
+  });
+
+  assert.deepEqual(rig.jar(), signedOutCookies);
+  assert.equal(rig.events.filter(event => event === 'browser:clear').length, 2);
+  assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
+});
+
+test('a code switch failure reports web_restore_failed when browser rollback fails', async () => {
+  const rig = makeRig({
+    onSet(details) {
+      return details.value !== 'A';
+    },
+  });
+
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, async email => {
+    rig.events.push(`code:switch:${email}`);
+    return {ok: false};
+  }), {
+    ok: false,
+    error: 'web_restore_failed',
+    email: EMAIL.B,
+  });
+
+  assert.equal(rig.events.includes(`code:switch:${EMAIL.B}`), true);
+  assert.equal(rig.events.includes('browser:set:A'), true);
+  assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
+});
+
+test('a same-account switch still runs the code switch without changing browser cookies', async () => {
+  const rig = makeRig();
+
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.A, async email => {
+    rig.events.push(`code:switch:${email}`);
+    return {ok: false};
+  }), {
+    ok: false,
+    error: 'code_switch_failed',
+    email: EMAIL.A,
+  });
+
+  assert.equal(rig.events.includes(`code:switch:${EMAIL.A}`), true);
+  assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
+  assert.equal(rig.events.includes('browser:clear'), false);
+  assert.equal(rig.events.some(event => event.startsWith('browser:set:')), false);
+});
+
 test('a rollback failure is reported explicitly as web_restore_failed', async () => {
   const rig = makeRig({onSet: () => false});
 
@@ -264,6 +359,41 @@ test('concurrent switches are serialized from B through C', async () => {
   const refreshedC = rig.events.indexOf('browser:refresh:https://claude.ai/c');
   assert.ok(refreshedB >= 0 && beganC > refreshedB, 'C did not begin before B completed');
   assert.ok(refreshedC > beganC, 'C completed after it began');
+});
+
+test('a queued switch cannot change the browser while the active code switch is pending', async () => {
+  const rig = makeRig();
+  let enterCodeSwitch;
+  let finishCodeSwitch;
+  const codeSwitchEntered = new Promise(resolve => { enterCodeSwitch = resolve; });
+  const codeSwitchFinished = new Promise(resolve => { finishCodeSwitch = resolve; });
+
+  const toB = rig.switcher.switchTo(EMAIL.B, async email => {
+    rig.events.push(`code:start:${email}`);
+    enterCodeSwitch();
+    await codeSwitchFinished;
+    rig.events.push(`code:finish:${email}`);
+    return {ok: true};
+  });
+  const toC = rig.switcher.switchTo(EMAIL.C, async email => {
+    rig.events.push(`code:start:${email}`);
+    return {ok: true};
+  });
+
+  await codeSwitchEntered;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'B');
+  assert.equal(rig.events.filter(event => event === 'browser:clear').length, 1);
+  assert.equal(rig.events.includes('browser:set:C'), false);
+
+  finishCodeSwitch();
+  assert.deepEqual(await toB, {ok: true, email: EMAIL.B});
+  assert.deepEqual(await toC, {ok: true, email: EMAIL.C});
+  assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'C');
+  assert.ok(
+    rig.events.indexOf(`code:start:${EMAIL.C}`) > rig.events.indexOf(`code:finish:${EMAIL.B}`),
+    'the queued switch started after the active code switch completed',
+  );
 });
 
 test('a non-Claude target cookie is rejected before the live jar is cleared', async () => {
@@ -316,4 +446,27 @@ test('adding another account saves the actual session before clearing locally', 
   assert.equal(rig.jar().length,0);
   assert.ok(rig.events.indexOf('vault:put:c@example.com')<rig.events.indexOf('browser:clear'));
   assert.equal(rig.events.at(-1),'browser:login');
+});
+
+test('an expired queued request cannot change the live browser session', async () => {
+  const rig = makeRig();
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, null, 0), {
+    ok: false, error: 'browser_timeout', email: EMAIL.B,
+  });
+  assert.deepEqual(rig.events, []);
+  assert.equal(await rig.probe(), EMAIL.A);
+});
+
+test('a deadline reached during cookie replacement rolls back before reporting failure', async t => {
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  const rig = makeRig({onSet: async details => {
+    if (details.value === 'B') now = 11;
+    return true;
+  }});
+  assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, null, 10), {
+    ok: false, error: 'web_switch_failed', email: EMAIL.B,
+  });
+  assert.equal(await rig.probe(), EMAIL.A);
+  assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
 });

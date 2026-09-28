@@ -1,5 +1,5 @@
 const message=document.querySelector('#message');
-const errors={web_login_needed:'Sign in to this account once and save it.',web_login_expired:'This login expired. Sign in once and save it again.',web_switch_failed:'Could not switch Chrome. Your previous login was restored.',web_restore_failed:'Chrome needs a fresh sign-in.',browser_missing:'Chrome companion is not connected.'};
+const errors={web_login_needed:'Sign in to this account once and save it.',web_login_expired:'This login expired. Sign in once and save it again.',web_switch_failed:'Could not switch Chrome. Your previous login was restored.',code_switch_failed:'Code could not switch. Your Chrome login is unchanged.',web_restore_failed:'Chrome needs a fresh sign-in.',browser_missing:'Chrome companion is not connected.',switch_in_progress:'Another switch is finishing. Try again.'};
 async function run(action,extra={}) {
  document.querySelectorAll('button').forEach(b=>b.disabled=true);
  try {const r=await chrome.runtime.sendMessage({action,...extra}); if(!r?.ok)throw new Error(errors[r?.error]||r?.error||'Could not connect'); return r;}
