@@ -1,17 +1,17 @@
-# Claude Switcher
+# Claude & Codex Switcher
 
-**Choose an account once. Use it in Chrome and Claude Code.**
+**Choose Claude and Codex accounts from one native menu.**
 
-A small native macOS menu bar app with compact five-hour and weekly usage gauges. Selecting an email changes the account used by your next ordinary `claude` or `claude --resume` command. The Chrome companion switches Claude.ai in the same browser profile.
+A small native macOS menu bar app with separate Claude and Codex sections. Claude selection coordinates Claude Code with Claude.ai in Chrome. Codex selection changes the ordinary Codex Desktop and CLI login. Five-hour and weekly usage share one compact line, separated by `|`.
 
 <p>
-  <img src="assets/usage-light.png" width="320" alt="Compact Claude account usage gauges in light appearance">
-  <img src="assets/usage-dark.png" width="320" alt="Compact Claude account usage gauges in dark appearance">
+  <img src="assets/usage-light.png" width="398" alt="Claude and Codex accounts with one line of rounded usage gauges in light appearance">
+  <img src="assets/usage-dark.png" width="398" alt="Claude and Codex accounts with one line of rounded usage gauges in dark appearance">
 </p>
 
-<sub>Usage-view previews with example accounts. The coordinated menu adds an active-account checkmark and Chrome connection status.</sub>
+<sub>Component previews with example accounts. Available usage windows depend on the provider.</sub>
 
-## The workflow
+## Claude accounts
 
 1. Choose an email in the menu bar.
 2. Claude.ai uses that account in your connected Chrome profile.
@@ -23,9 +23,37 @@ The menu-bar icon spins during a switch. A green check appears for three seconds
 
 Code and Chrome have separate credentials. The switcher coordinates them; it does not run `/login` on every switch. Initial authorization is required once per account, and expired or revoked logins may need authorization again.
 
+## Codex accounts
+
+The Codex section uses the three email labels configured in the Claude profiles unless `~/.config/claude-switcher/codex-settings.json` overrides them. Connect each account once through the official Codex browser login; the switcher verifies the login and saves it in macOS Keychain. If a saved login expires, use **Settings → Reconnect Codex account**.
+
+Selecting a saved email verifies the target before asking Codex to quit normally. It then activates the official `auth.json` in the ordinary `~/.codex` directory, verifies identity and usage, and reopens Codex through `NSWorkspace`. The switcher never force-quits Codex. If active work prevents a normal quit, finish that work and try again.
+
+Already-running Codex CLI processes cache their login and need to be restarted or resumed after a switch. The ChatGPT website account is separate and is not switched. If `cli_auth_credentials_store` is set to the unsupported `keyring`, `auto`, or `ephemeral` mode, switching fails without changing that setting.
+
+Aliases are optional. They map a displayed email label to the account's actual provider email:
+
+```json
+{
+  "emails": ["first@example.com", "second@example.com", "third@example.com"],
+  "aliases": {
+    "first@example.com": "provider@example.com"
+  }
+}
+```
+
+The bundled executable also exposes the Codex account operations directly:
+
+```sh
+APP="/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher"
+"$APP" --codex-accounts
+"$APP" --codex-connect person@example.com
+"$APP" --codex-switch person@example.com
+```
+
 ## Install
 
-Requires **macOS 14+**, a **Swift 6 toolchain**, [Claude Code](https://code.claude.com/docs/en/setup), and [uv](https://docs.astral.sh/uv/getting-started/installation/) for the account backend.
+Requires **macOS 14+**, a **Swift 6 toolchain**, [Claude Code](https://code.claude.com/docs/en/setup), and [uv](https://docs.astral.sh/uv/getting-started/installation/) for the Claude account backend. Install the official Codex desktop app to use the Codex section.
 
 ```sh
 git clone https://github.com/paperfoot/claude-switcher.git
@@ -57,9 +85,9 @@ If Chrome is closed, selection switches Code immediately. When the companion rec
 
 ## Usage at a glance
 
-Tiny battery gauges show **percentage consumed**, with reset times in your timezone. Green is below 70%, amber is 70–89%, and red is 90% or higher.
+Tiny rounded gauges show the five-hour and weekly **percentage consumed** on the same line, with a `|` separator and reset times in your timezone. Green is below 70%, amber is 70–89%, and red is 90% or higher. A limit that the provider does not return is unavailable (`—` in the gauge), not zero.
 
-Readings refresh in the background about every five minutes and when due after wake. Cached values survive restarts and stay visible in gray while refreshing. A passed reset is marked **Previous · reset passed**, rather than inventing a fresh zero. Cached readings expire after seven days.
+Readings refresh in the background about every five minutes and when due after wake. Cached values survive restarts and stay visible in gray while refreshing. A passed reset is marked as due rather than inventing a fresh zero. Cached readings expire after seven days.
 
 ## How switching works
 
@@ -98,6 +126,6 @@ Tests cover account isolation, usage caching, identity verification, cookie rest
 
 ## Credits and license
 
-Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau's Claude Switcher](https://github.com/kevinchau/claude-switcher), with original history and MIT attribution preserved. Coordinated Code switching uses [Onur Cetinkol's claude-swap](https://github.com/realiti4/claude-swap), also MIT licensed.
+Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau's Claude Switcher](https://github.com/kevinchau/claude-switcher), with original history and MIT attribution preserved. Coordinated Code switching uses [Onur Cetinkol's claude-swap](https://github.com/realiti4/claude-swap), also MIT licensed. The Codex app-server RPC transport adapts code from [liuzhao1225/codex-account-switcher](https://github.com/liuzhao1225/codex-account-switcher) under the MIT license, for the RPC transport only; see [ThirdParty/CodexAccountSwitcher-LICENSE](ThirdParty/CodexAccountSwitcher-LICENSE).
 
-Licensed under [MIT](LICENSE). Not affiliated with Anthropic.
+Licensed under [MIT](LICENSE). Not affiliated with Anthropic or OpenAI.

@@ -56,7 +56,7 @@ final class StatusItemFeedback {
 
     private func showIdle(email: String? = nil) {
         showSymbol("person.2.circle", tint: nil)
-        setDescription(email.map { "Claude: \($0)" } ?? "Claude accounts")
+        setDescription(email.map { $0 } ?? "Claude and Codex accounts")
     }
 
     private func showSymbol(_ name: String, tint: NSColor?) {
@@ -67,7 +67,7 @@ final class StatusItemFeedback {
         }
         image?.isTemplate = tint == nil
         button?.image = image
-        button?.title = image == nil ? "Claude" : ""
+        button?.title = image == nil ? "Accounts" : ""
         button?.contentTintColor = nil
     }
 

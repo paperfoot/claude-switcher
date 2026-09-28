@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.7.2}"
+VERSION="${VERSION:-0.8.0}"
 APP_NAME="Claude Switcher"
 EXEC_NAME="claude-switcher"
 BUNDLE_ID="tech.local.claude-switcher"
@@ -52,6 +52,8 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp -R "$ROOT/browser-extension" "$CONTENTS/Resources/BrowserExtension"
 cp -R "$ROOT/bridge" "$CONTENTS/Resources/Bridge"
 cp "$ROOT/assets/setup.html" "$CONTENTS/Resources/setup.html"
+cp "$ROOT/LICENSE" "$CONTENTS/Resources/LICENSE"
+cp -R "$ROOT/ThirdParty" "$CONTENTS/Resources/ThirdParty"
 
 cp "$BIN_SRC" "$CONTENTS/MacOS/$EXEC_NAME"
 chmod +x "$CONTENTS/MacOS/$EXEC_NAME"
@@ -103,7 +105,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>MIT licensed. Not affiliated with or endorsed by Anthropic.</string>
+	<string>MIT licensed. Not affiliated with Anthropic or OpenAI.</string>
 </dict>
 </plist>
 PLIST

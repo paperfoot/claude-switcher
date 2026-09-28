@@ -1,7 +1,7 @@
 import AppKit
 import ClaudeSwitcherCore
 
-/// Compact usage rows: period, battery gauge, percentage used, and reset time.
+/// One compact line: period, rounded gauge, percentage used, and reset time.
 ///
 /// A plain frame-based view drawn in one `draw(_:)`: `NSMenu` sizes a view item from its
 /// frame and stretches it to the menu's width through the autoresizing mask. Colours are
@@ -21,7 +21,7 @@ final class UsageBarView: NSView {
     /// profile label above them.
     private static let titleInset: CGFloat = 21
     private static let rightInset: CGFloat = 14
-    private static let rowHeight: CGFloat = 16
+    private static let rowHeight: CGFloat = 22
     private static let labelWidth: CGFloat = 36
     private static let barWidth: CGFloat = 22
     private static let barHeight: CGFloat = 9
@@ -29,9 +29,9 @@ final class UsageBarView: NSView {
 
     private(set) var rows: [Row]
 
-    init(rows: [Row], width: CGFloat = 300) {
+    init(rows: [Row], width: CGFloat = 398) {
         self.rows = rows
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: CGFloat(rows.count) * Self.rowHeight + 6))
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowHeight))
         autoresizingMask = [.width]
     }
 
@@ -49,28 +49,32 @@ final class UsageBarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let font = NSFont.menuFont(ofSize: 11)
         let label: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-        let note: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor]
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let note: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph]
 
-        // Rows are laid out top-down; AppKit's origin is bottom-left.
-        for (index, row) in rows.enumerated() {
+        let visible = Array(rows.prefix(2))
+        let availableWidth = bounds.width - Self.titleInset - Self.rightInset
+        let columnWidth = (availableWidth - 22) / 2
+        for (index, row) in visible.enumerated() {
             let tint = row.percent == nil || row.isCached ? NSColor.secondaryLabelColor : Self.color(for: row.level)
-            let number: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: tint]
-            let top = bounds.height - 3 - CGFloat(index + 1) * Self.rowHeight
-            let baseline = top + (Self.rowHeight - font.capHeight) / 2 - 1
-            var x = Self.titleInset
-
+            let number: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: tint]
+            let top: CGFloat = 0
+            let baseline = (Self.rowHeight - font.capHeight) / 2 - 1
+            let start = Self.titleInset + CGFloat(index) * (columnWidth + 22)
+            var x = start
+            if index == 1 {
+                ("|" as NSString).draw(at: NSPoint(x: start - 14, y: baseline), withAttributes: label)
+            }
             (row.label as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: label)
             x += Self.labelWidth
 
             let track = NSRect(x: x, y: top + (Self.rowHeight - Self.barHeight) / 2, width: Self.barWidth, height: Self.barHeight)
-            // A tiny battery gauge, with the percentage beside it. Fill means usage consumed.
+            // A small rounded gauge. Fill and percentage both mean usage consumed.
             tint.withAlphaComponent(0.7).setStroke()
             let outline = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
             outline.lineWidth = 0.8
             outline.stroke()
-            tint.withAlphaComponent(0.7).setFill()
-            NSBezierPath(roundedRect: NSRect(x: track.maxX + 1, y: track.midY - 1.5, width: 1.5, height: 3),
-                         xRadius: 0.6, yRadius: 0.6).fill()
             if let percent = row.percent, percent > 0 {
                 let inner = track.insetBy(dx: 1.5, dy: 1.5)
                 let fill = NSRect(x: inner.minX, y: inner.minY,
@@ -86,10 +90,12 @@ final class UsageBarView: NSView {
             x += Self.percentWidth
 
             if let trailing = row.trailing {
-                let available = bounds.width - Self.rightInset - x
-                if available > 40 {
-                    (trailing as NSString).draw(in: NSRect(x: x, y: baseline - 2, width: available, height: Self.rowHeight),
-                                                withAttributes: note)
+                let available = start + columnWidth - x
+                if available > 20 {
+                    NSGraphicsContext.saveGraphicsState()
+                    NSBezierPath(rect: NSRect(x: x, y: 0, width: available, height: bounds.height)).addClip()
+                    (trailing as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: note)
+                    NSGraphicsContext.restoreGraphicsState()
                 }
             }
         }
