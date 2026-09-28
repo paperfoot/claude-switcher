@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Switcher Companion",
+  "version": "0.7.0",
+  "description": "Keep Claude in Chrome and Claude Code on your selected account.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzsjQPNgPFQu615BI0ep4YhwC3aGBfJMItcgrgqzVa60gpUy1d6CN35PRWS0uVd5MSOYdOAy61xvSyngWeMm1s+4IPW5+5p/aon2Behw2sMgPctHVKo6s7dFXSmGFNYSVYPfdszyBxDsqWHCzWOwE/xnM4Zi3hByXJG5pR0RQ9KER6H21cwMOxmcEH897C8/O2BYaytYn/IQT1WsapNEQSee6lpSCpULe6VoxdV02WEQ8H5b8MJQZxovbwbc0VUstzLw4JiSyMbGGPM7pQWMTgmvrCyXmMH/GRG1QbjW4mP3Hu4VAECVr4VNBmFZI3GorcW7Y+CrxJTWun7aDR5N0jQIDAQAB",
+  "permissions": [
+    "cookies",
+    "tabs",
+    "nativeMessaging",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*",
+    "https://*.claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Claude accounts"
+  }
+}
