@@ -16,5 +16,12 @@ jobs:
         run: swift build -c release
       - name: Test
         run: swift test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Browser switching tests
+        run: node --test browser-extension/session-core.test.js
+      - name: Native bridge and coordinator tests
+        run: python3 -m unittest discover -s bridge -p 'test_*.py'
       - name: Bundle (ad-hoc signed)
         run: make bundle

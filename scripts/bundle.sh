@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.6.5}"
+VERSION="${VERSION:-0.7.0}"
 APP_NAME="Claude Switcher"
 EXEC_NAME="claude-switcher"
 BUNDLE_ID="tech.local.claude-switcher"
@@ -48,6 +48,10 @@ fi
 echo "==> Assembling $APP_NAME.app"
 rm -rf "$APP_DIR"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+
+cp -R "$ROOT/browser-extension" "$CONTENTS/Resources/BrowserExtension"
+cp -R "$ROOT/bridge" "$CONTENTS/Resources/Bridge"
+cp "$ROOT/assets/setup.html" "$CONTENTS/Resources/setup.html"
 
 cp "$BIN_SRC" "$CONTENTS/MacOS/$EXEC_NAME"
 chmod +x "$CONTENTS/MacOS/$EXEC_NAME"

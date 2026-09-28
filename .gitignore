@@ -9,3 +9,6 @@ tasks/
 
 # local notarization credentials, read by scripts/notarize.sh
 .notary.env
+
+__pycache__/
+*.pyc
