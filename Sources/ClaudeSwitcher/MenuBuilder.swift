@@ -13,6 +13,8 @@ enum MenuBuilder {
         var selectProfile: Selector
         var copyTerminalCommand: Selector
         var openTerminal: Selector
+        var switchAccount: Selector
+        var setupSwitching: Selector
         var addProfile: Selector
         var renameProfile: Selector
         var removeProfile: Selector
@@ -48,6 +50,12 @@ enum MenuBuilder {
         var now: Date = Date()
         /// Set after profiles were reopened automatically; shown once so it is never silent.
         var autoReopenNotice: String?
+        var coordinated = false
+        var selectedEmail: String?
+        var browserEmail: String?
+        var browserConnected = false
+        var switching = false
+        var switchMessage: String?
     }
 
     // MARK: - Build
@@ -55,21 +63,34 @@ enum MenuBuilder {
     static func build(_ input: Input, target: AnyObject, actions: Actions) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(informationalItem("Claude Code"))
+        menu.addItem(informationalItem(input.coordinated ? "Claude accounts" : "Claude Code"))
         if input.configError != nil {
             menu.addItem(informationalItem("Settings could not be loaded"))
         }
         for profile in input.config.profiles {
-            let item = actionItem(profile.label, action: actions.openTerminal, target: target, profile: profile)
+            let item = actionItem(profile.label, action: input.coordinated ? actions.switchAccount : actions.openTerminal, target: target, profile: profile)
             item.identifier = profileItemIdentifier(profile.id)
             applyAccount(to: item, profile: profile, status: input.accountStatuses[profile.id])
+            if input.coordinated {
+                item.state = profile.expectedEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") == .orderedSame ? .on : .off
+                item.isEnabled = !input.switching
+                item.toolTip = "Use this account in Chrome and the next Claude Code session."
+            }
             menu.addItem(item)
             menu.addItem(liveUsageItem(profile: profile, status: input.accountStatuses[profile.id],
                                        snapshot: input.liveUsage[profile.id], failed: input.usageFailures.contains(profile.id),
                                        now: input.now))
         }
+        if input.coordinated {
+            if let message = input.switchMessage { menu.addItem(informationalItem(message)) }
+            else if input.browserConnected, input.browserEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") == .orderedSame {
+                menu.addItem(informationalItem("Chrome and Code ready"))
+            } else {
+                menu.addItem(actionItem(input.browserConnected ? "Connect this Chrome account…" : "Connect Chrome…", action: actions.setupSwitching, target: target))
+            }
+        }
         menu.addItem(.separator())
-        menu.addItem(actionItem("Add account…", action: actions.addProfile, target: target))
+        menu.addItem(actionItem(input.coordinated ? "Connect accounts…" : "Add account…", action: input.coordinated ? actions.setupSwitching : actions.addProfile, target: target))
 
         let desktop = NSMenu()
         desktop.autoenablesItems = false
@@ -127,6 +148,7 @@ enum MenuBuilder {
             item.toolTip = "Remove from this menu. Account data stays on this Mac."
             remove.addItem(item)
         }
+        settings.addItem(actionItem("Set up switching…", action: actions.setupSwitching, target: target))
         settings.addItem(submenuItem("Copy terminal command", menu: commands))
         settings.addItem(submenuItem("Rename desktop profile", menu: rename))
         settings.addItem(submenuItem("Remove account", menu: remove))
