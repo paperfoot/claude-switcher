@@ -2,6 +2,7 @@ import {SessionSwitcher, identityFrom, claudeCookie} from './session-core.js';
 const HOST = 'org.paperfoot.claude_switcher';
 let port;
 let connectionError = 'Open Claude Switcher to connect';
+let popupSwitchInProgress = false;
 const requests = new Map();
 function native(action, payload={}) {
   if (!port) connect();
@@ -74,27 +75,36 @@ function connect() {
         else pending.resolve(message.result);
       } else if(message.type==='command'){
         let result;
-        try { result=message.command==='switch'?await switcher.switchTo(message.email):await switcher.status(); }
+        try {
+          result=message.command==='switch'
+            ? popupSwitchInProgress ? {ok:false,error:'switch_in_progress'} : await switcher.switchTo(message.email,null,message.expiresAt)
+            : {...await switcher.status(),version:chrome.runtime.getManifest().version};
+        }
         catch { result={ok:false,error:'web_unavailable'}; }
         if(port===p)p.postMessage({type:'result',id:message.id,result});
       }
     });
     // Initial setup and manual re-logins are captured without another popup click.
     // The native vault only accepts the accounts configured in the menu app.
-    void switcher.save().catch(()=>{});
+    void (async()=>{
+      await switcher.save().catch(()=>{});
+      // A selection made while Chrome was closed takes effect when Chrome reconnects.
+      const pending=await native('pending_selection');
+      if(pending.email) {
+        const result=await switcher.switchTo(pending.email);
+        if(result.ok)await native('browser_ready',{email:pending.email});
+      }
+    })().catch(()=>{});
   } catch { port=null; }
 }
 chrome.runtime.onMessage.addListener((msg,sender,send)=>{
   if(sender.id!==chrome.runtime.id) return false;
   const action=msg?.action;
   const selectBoth=async()=>{
-    const previous=await probe();
-    const web=await switcher.switchTo(msg.email); if(!web.ok)return web;
-    try { return await native('select',{email:msg.email}); }
-    catch {
-      if(previous) await switcher.switchTo(previous);
-      return {ok:false,error:'Code could not switch; the browser switch was undone.'};
-    }
+    if(popupSwitchInProgress)return {ok:false,error:'switch_in_progress'};
+    popupSwitchInProgress=true;
+    try{return await switcher.switchTo(msg.email,email=>native('select',{email}));}
+    finally{popupSwitchInProgress=false;}
   };
   const work=action==='save'?switcher.save():action==='newLogin'?switcher.newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(new Error('Unknown action'));
   work.then(result=>send(result)).catch(error=>send({ok:false,error:error.message})); return true;
