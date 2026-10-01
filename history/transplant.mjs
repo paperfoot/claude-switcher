@@ -109,11 +109,21 @@ export function parseProcesses(processes, commands, app = '/Applications/Claude.
     if (!match) throw new Error('cannot parse worker command identity')
     return [`${match[1]}/${match[3]}`, (match[4].match(UUIDS) ?? []).map((id) => id.toLowerCase())]
   }))
+  const codeCommands = new Set(commands.split('\n').flatMap(line => {
+    const match = line.match(pattern)
+    if (!match) return []
+    const command = match[4]
+    // Electron's disclaimer also hosts MCP connectors. Only SDK processes use
+    // stream-json; an idle connector must not block a history transfer.
+    return /(?:^|\s)--(?:input|output)-format(?:=|\s+)stream-json(?:\s|$)/.test(command)
+      ? [`${match[1]}/${match[3]}`] : []
+  }))
   const rows = processes.split('\n').filter((line) => line.trim()).map((line) => {
     const match = line.match(pattern)
     if (!match) throw new Error('cannot parse worker process identity')
     const executable = match[4].trim()
     return { pid: Number(match[1]), ppid: Number(match[2]), started: match[3], executable,
+      codeWorker: executable === 'claude' || (path.isAbsolute(executable) && path.basename(executable).toLowerCase() === 'claude') || codeCommands.has(`${match[1]}/${match[3]}`),
       worker: path.basename(executable).toLowerCase() === 'claude' || executable.endsWith('/Claude.app/Contents/Helpers/disclaimer') || executable === path.join(app, 'Contents/Helpers/disclaimer'),
       ids: identities.get(`${match[1]}/${match[3]}`) ?? [] }
   })
@@ -158,7 +168,7 @@ const processTable = (app) => {
   return parseProcesses(processes.stdout, commands.stdout, app, registrations)
 }
 const workers = (rows = processTable()) => Object.assign(new Set(rows.filter((row) => row.worker && row.pid !== row.desktopPid).flatMap((row) => row.ids)), { rows })
-export const desktopHasWorkers = (app, rows = processTable(app)) => rows.some(row => row.worker && row.desktopPid && row.pid !== row.desktopPid)
+export const desktopHasWorkers = (app, rows = processTable(app)) => rows.some(row => row.codeWorker && row.desktopPid && row.pid !== row.desktopPid)
 const ownsWorker = (live, id, recordId) => Boolean(live?.has(id?.toLowerCase()) || live?.has(recordId?.replace(/^local_/, '').toLowerCase()))
 const processIdentity = (row) => `${row.pid}/${row.started}`
 const restartFingerprint = (desktop, rows) => sha(stable({ desktop: { pid: desktop.pid, started: desktop.started },
@@ -1421,7 +1431,13 @@ export async function inventory(from, to, paths, report = () => {}, options = {}
   check()
   const requestedAt = options.requestedAt ?? new Date().toISOString()
   const cloudRequested = options.cloudRequested === true || Boolean(options.cloud)
-  const workTotal = from.reduce((sum, account) => sum + account.sessions.length, 0) + to.sessions.length
+  const sourceSessions = from.flatMap(account => account.sessions)
+  const sourceProjects = new Set(sourceSessions.map(session => session.cwd))
+  const sourceIds = new Set(sourceSessions.flatMap(session => [session.id, session.record.sessionId, session.record.forkedFromSessionId]).filter(Boolean))
+  const targetSessions = options.localProjectsOnly
+    ? to.sessions.filter(session => sourceProjects.has(session.cwd) || sourceIds.has(session.id) || sourceIds.has(session.record.sessionId) || sourceIds.has(session.record.forkedFromSessionId))
+    : to.sessions
+  const workTotal = sourceSessions.length + targetSessions.length
   let completed = 0
   progress(report, 'scan', completed, workTotal)
   const cache = await openAnalysisCache(paths, options.writeCache === true)
@@ -1487,7 +1503,7 @@ export async function inventory(from, to, paths, report = () => {}, options = {}
     }
   }
   const targets = []
-  for (const s of to.sessions) {
+  for (const s of targetSessions) {
     check()
     try {
       if (!s.id) continue

@@ -11,7 +11,6 @@ const home = os.homedir();
 const base = path.join(home, '.config/claude-switcher');
 const digest = data => createHash('sha256').update(data).digest('hex');
 const readJSON = async file => JSON.parse(await fs.readFile(file, 'utf8'));
-const exists = async file => fs.access(file).then(() => true, () => false);
 export class HistoryError extends Error {
   constructor(code) { super(code); this.code = code; }
 }
@@ -162,10 +161,9 @@ export async function plan(ctx, identity) {
       if (session.record.scheduledTaskId || session.record.notifySessionId || row.taskSessions.size) fail('scheduled_sessions');
     }
   }
-  const inv = await inventory(sources, target, paths);
+  const inv = await inventory(sources, target, paths, () => {}, {localProjectsOnly: true});
   for (const row of [...inv.move, ...inv.there]) {
     await noSymlinks(row.transcript);
-    if (!await exists(row.cwd)) fail('project_missing');
   }
   if (inv.blocked.length || inv.unreadable.length || inv.rejected.length) fail('sessions_busy_or_conflicted');
   const selection = [...sources, target].map(row => ({dir: row.dir, records: row.sessions.map(s =>
