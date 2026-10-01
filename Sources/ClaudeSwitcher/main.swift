@@ -13,12 +13,14 @@ USAGE
   claude-switcher --codex-accounts Print saved Codex account status and usage.
   claude-switcher --codex-connect EMAIL  Save a Codex login through the browser.
   claude-switcher --codex-switch EMAIL  Select an account and reopen Codex.
+  claude-switcher --history-plan  Preview a local Desktop history transfer.
+  claude-switcher --history-enable  Enable sharing after Desktop account changes.
   claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
 
 After coordinated setup, click an email to select it for Chrome and the next Claude Code launch.
 Tiny gauges show usage consumed, with exact reset times from Anthropic.
-Desktop profiles and their local usage history are available in the Desktop submenu.
+Desktop profiles and Code history sharing are under Settings → Claude Desktop.
 Desktop and terminal sign-ins are separate.
 
 CONFIG
@@ -139,6 +141,29 @@ private func runDryRun() -> Int32 {
 }
 
 let commandLineArguments = CommandLine.arguments.dropFirst()
+
+if commandLineArguments.contains("--history-enable") {
+    UserDefaults.standard.set(true, forKey: "shareClaudeCodeHistory")
+    print("Code history sharing enabled")
+    exit(0)
+}
+
+if commandLineArguments.contains("--history-plan") {
+    do {
+        let config = try Config.load()
+        let instances = InstanceManager.runningInstances(appPath: config.claudeAppPath)
+        guard instances.count == 1, let instance = instances.first,
+              instance.profile != .unknown,
+              let started = NSRunningApplication(processIdentifier: instance.pid)?.launchDate,
+              let runtime = DesktopHistoryRuntime.installed() else {
+            print("{\"ok\":false,\"error\":\"desktop_not_ready\"}"); exit(1)
+        }
+        let root = instance.userDataDir ?? NSHomeDirectory() + "/Library/Application Support/Claude"
+        let result = try runtime.request("plan", arguments: [root, String(instance.pid), String(started.timeIntervalSince1970 * 1000)])
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        FileHandle.standardOutput.write(try encoder.encode(result)); print(); exit(result.ok ? 0 : 1)
+    } catch { print("{\"ok\":false,\"error\":\"history_unavailable\"}"); exit(1) }
+}
 
 if commandLineArguments.contains("--help") || commandLineArguments.contains("-h") {
     print(usageText)

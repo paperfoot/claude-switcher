@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Launches are serialized: while one is in flight the profile items are disabled and
     /// re-enabled from the completion handler, success or failure.
     private var isBusy = false
+    private var desktopHistory: DesktopHistoryController?
     private var launchGeneration = 0
     private var isMenuOpen = false
 
@@ -99,7 +100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggleReopenAfterUpdate: #selector(toggleReopenAfterUpdate(_:)),
         toggleBlockUpdates: #selector(toggleBlockUpdates(_:)),
         installUpdate: #selector(installUpdate(_:)),
-        quit: #selector(quit(_:))
+        quit: #selector(quit(_:)),
+        toggleHistory: #selector(toggleHistory(_:)),
+        syncHistory: #selector(syncHistory(_:)),
+        undoHistory: #selector(undoHistory(_:))
     )
 
     // MARK: - Lifecycle
@@ -107,6 +111,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         reloadConfig()
         configureCodex()
+        desktopHistory = DesktopHistoryController(configuration: { [weak self] in self?.config ?? Config.defaultConfig() },
+            isAvailable: { [weak self] in
+                guard let self else { return false }
+                return self.automationLock != nil && self.configError == nil && !self.isBusy && !self.isSwitchingAccount && !self.codexBusy && self.updateProgress == nil
+            }, changed: { [weak self] in self?.rebuildIfVisible() })
+        desktopHistory?.start()
         liveUsage = LiveUsageCache.load(profiles: config.profiles)
         nextUsageRefresh = liveUsage.mapValues { LiveUsagePolicy.nextRefresh(for: $0, now: Date()) }
 
@@ -216,7 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             accountStatuses: accountStatuses,
             liveUsage: liveUsage,
             usageFailures: usageFailures,
-            isBusy: isBusy,
+            isBusy: isBusy || desktopHistory?.busy == true,
             configError: configError,
             claudeAppExists: FileManager.default.fileExists(atPath: PathNormalizer.normalize(config.claudeAppPath)),
             launchAtLogin: launchAtLoginState(),
@@ -233,8 +243,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             selectedEmail: selectedEmailOverride ?? coordinatedSnapshot?.codeEmail,
             browserEmail: coordinatedSnapshot?.browser.email,
             browserConnected: coordinatedSnapshot?.browser.ok == true,
-            switching: isSwitchingAccount,
-            switchMessage: switchMessage
+            switching: isSwitchingAccount || desktopHistory?.busy == true,
+            switchMessage: switchMessage,
+            historyEnabled: desktopHistory?.enabled ?? false,
+            historyBusy: desktopHistory?.busy ?? false,
+            historyMessage: desktopHistory?.message
         )
     }
 
@@ -603,6 +616,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Actions: profiles
+
+    @objc private func toggleHistory(_ sender: NSMenuItem) { desktopHistory?.toggle() }
+    @objc private func syncHistory(_ sender: NSMenuItem) { desktopHistory?.refresh(force: true) }
+    @objc private func undoHistory(_ sender: NSMenuItem) { desktopHistory?.undoLastMove() }
 
     @objc private func selectProfile(_ sender: NSMenuItem) {
         guard !isBusy,
@@ -1107,7 +1124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Only the switcher holding the lock acts on its own. Never on a config that failed to
         // load: what is in memory then is the defaults, not what the user asked for. And the
         // confirmed quit-and-install flow reopens what it closed; stay out of its way.
-        guard automationLock != nil, configError == nil, config.reopenAfterUpdate, updateProgress == nil,
+        guard automationLock != nil, desktopHistory?.busy != true, configError == nil, config.reopenAfterUpdate, updateProgress == nil,
               let bundleID = InstanceManager.bundleIdentifier(appPath: config.claudeAppPath)
         else { return }
 

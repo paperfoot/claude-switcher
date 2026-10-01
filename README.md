@@ -1,7 +1,5 @@
 # Claude & Codex Switcher
 
-**Choose Claude and Codex accounts from one native menu.**
-
 A small native macOS menu bar app with separate Claude and Codex sections. Claude selection coordinates Claude Code with Claude.ai in Chrome. Codex selection changes the ordinary Codex Desktop and CLI login. Five-hour and weekly usage share one compact line, separated by `|`.
 
 <p>
@@ -30,6 +28,8 @@ The Codex section uses the three email labels configured in the Claude profiles 
 Selecting a saved email verifies the target before asking Codex to quit normally. It then activates the official `auth.json` in the ordinary `~/.codex` directory, verifies identity and usage, and reopens Codex through `NSWorkspace`. The switcher never force-quits Codex. If active work prevents a normal quit, finish that work and try again.
 
 Already-running Codex CLI processes cache their login and need to be restarted or resumed after a switch. The ChatGPT website account is separate and is not switched. If `cli_auth_credentials_store` is set to the unsupported `keyring`, `auto`, or `ephemeral` mode, switching fails without changing that setting.
+
+The Desktop restart is still required by this integration. Codex supports account changes through its own app-server connection, but does not expose a supported external reload command for an already-running Desktop app. Updating `auth.json` alone does not replace its cached login.
 
 Aliases are optional. They map a displayed email label to the account's actual provider email:
 
@@ -77,7 +77,7 @@ Chrome requires a user to load an unpacked extension. The installer does not cha
 3. Sign in to a configured account at Claude.ai. The companion saves it automatically; its popup shows the detected email and also offers **Save this Claude login**.
 4. Choose **Add another account** in the companion, then sign in to the next account. This clears the browser session locally without calling Claude’s logout endpoint, so saved sessions are not intentionally revoked. Repeat once per configured account.
 
-Pin the companion if you want to switch from Chrome too. **Settings → Set up switching…** opens the setup guide.
+Pin the companion if you want to switch from Chrome too. **Settings → Connect Claude…** opens the setup guide.
 
 After updating the app and rerunning the setup script, open `chrome://extensions` and click **Reload** on **Claude Switcher Companion**. Chrome can retain an unpacked extension's old code even after a browser restart. Your saved accounts stay in Keychain.
 
@@ -95,9 +95,21 @@ Readings refresh in the background about every five minutes and when due after w
 - **Chrome:** a Manifest V3 extension saves Claude.ai sessions in the Mac's **Keychain**, through a local native-messaging host. It verifies the current email before saving, checks the restored email after switching, and restores the previous cookies if switching fails. No cookies are saved in extension storage or exported by diagnostics.
 - **Connection:** a private local Unix socket connects the menu app to Chrome's native host. The host accepts the companion's exact extension origin. There is no listening network port or remote debugging connection.
 
-The extension touches Claude.ai cookies only. It does not switch Google accounts, Gmail, or unrelated sites. All Claude.ai tabs within the connected Chrome profile share the selected login; switching can reload them. Claude Desktop still has a separate sign-in and remains under the Desktop submenu.
+The extension touches Claude.ai cookies only. It does not switch Google accounts, Gmail, or unrelated sites. All Claude.ai tabs within the connected Chrome profile share the selected login; switching can reload them. Claude Desktop still has a separate sign-in and is available under **Settings → Claude Desktop**.
 
 Claude's cookie and credential formats are not public compatibility contracts. Changes in Claude can require maintenance. Chrome switching is supported for one connected regular browser profile at a time.
+
+## Claude Desktop Code history
+
+Turn on **Settings → Claude Desktop → Share Code history** to carry local Code conversations across Desktop accounts. This requires Node.js 22 or newer at `~/.local/bin/node`, `/opt/homebrew/bin/node`, or `/usr/local/bin/node`.
+
+After a verified Desktop sign-in, the switcher waits for open Code processes to close, then normally quits Claude, transfers eligible sidebar records and reopens the same Desktop profile. Project paths, conversation IDs, transcripts and sidecars stay in place. This feature follows the account signed into Desktop; selecting a Chrome/Code account does not sign Desktop in.
+
+Only accounts already configured in the switcher are included. Missing transcripts are skipped. Changed or conflicting records, scheduled sessions and missing project folders stop the transfer. Account-specific connector settings, permissions and Remote Control links are cleared from the destination records. Claude may ask for those permissions again. Cloud chats and Cowork sessions are excluded.
+
+**Sync history now** retries a stopped transfer. Recovery records live privately in `~/.config/claude-switcher/desktop-history`. **Undo last history move** restores the previous sidebar records while Claude is closed and disables automatic sharing. Undo refuses changed destination records; newer transcript content stays intact.
+
+The transfer engine is adapted from [claude-transplant 4.1.0](https://github.com/vitaliyhayda/claude-transplant). See the [pinned source and local changes](ThirdParty/ClaudeTransplant-NOTICE.md).
 
 ## Diagnostics
 
@@ -117,6 +129,7 @@ Settings and usage cache live in `~/.config/claude-switcher/`, with private file
 ```sh
 swift test
 scripts/check-menu-refresh.sh
+node --test history/history.test.mjs
 node --test browser-extension/*.test.js
 python3 -m unittest discover -s bridge -p 'test_*.py'
 swift build -c release
