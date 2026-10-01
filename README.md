@@ -105,7 +105,9 @@ Turn on **Settings → Claude Desktop → Share Code history** to carry local Co
 
 After a verified Desktop sign-in, the switcher waits for open Code processes to close, then normally quits Claude, transfers eligible sidebar records and reopens the same Desktop profile. Project paths, conversation IDs, transcripts and sidecars stay in place. This feature follows the account signed into Desktop; selecting a Chrome/Code account does not sign Desktop in.
 
-Only accounts already configured in the switcher are included. Missing transcripts are skipped. Changed or conflicting records, scheduled sessions and missing project folders stop the transfer. Account-specific connector settings, permissions and Remote Control links are cleared from the destination records. Claude may ask for those permissions again. Cloud chats and Cowork sessions are excluded.
+Only accounts already configured in the switcher are included. Missing transcripts are skipped. Changed or conflicting records and scheduled sessions stop the transfer. History from a removed project folder remains available; restore or select its folder before resuming work. Account-specific connector settings, permissions and Remote Control links are cleared from the destination records. Claude may ask for those permissions again. Cloud chats and Cowork sessions are excluded.
+
+For terminal sessions that have never appeared in Desktop, use Claude's **Help → Troubleshooting → Import Claude Code CLI Sessions…**. Claude imports eligible local transcripts and refreshes its sidebar immediately. The switcher can then carry those entries across your configured Desktop accounts.
 
 **Sync history now** retries a stopped transfer. Recovery records live privately in `~/.config/claude-switcher/desktop-history`. **Undo last history move** restores the previous sidebar records while Claude is closed and disables automatic sharing. Undo refuses changed destination records; newer transcript content stays intact.
 
@@ -125,6 +127,8 @@ Diagnostics contain account emails and usage, not tokens or cookies. Redact pers
 Settings and usage cache live in `~/.config/claude-switcher/`, with private file permissions. The installed companion lives in `~/Library/Application Support/Claude Switcher/`. The Code backend manages its own account store under `~/.claude-swap-backup/`.
 
 ## Development
+
+Enable startup through **Settings → Open at login**, or run the installed executable with `--login-item on`. Use `--login-item status` to verify registration.
 
 ```sh
 swift test

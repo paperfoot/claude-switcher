@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import ClaudeSwitcherCore
 
 private let usageText = """
@@ -15,6 +16,7 @@ USAGE
   claude-switcher --codex-switch EMAIL  Select an account and reopen Codex.
   claude-switcher --history-plan  Preview a local Desktop history transfer.
   claude-switcher --history-enable  Enable sharing after Desktop account changes.
+  claude-switcher --login-item on|off|status  Set or check launch at login.
   claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
 
@@ -141,6 +143,25 @@ private func runDryRun() -> Int32 {
 }
 
 let commandLineArguments = CommandLine.arguments.dropFirst()
+
+if let index = commandLineArguments.firstIndex(of: "--login-item") {
+    do {
+        guard LoginItem.runsFromBundle() else { throw CocoaError(.executableNotLoadable) }
+        let value = commandLineArguments.dropFirst(index).first ?? "status"
+        switch value {
+        case "on": if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
+        case "off": try SMAppService.mainApp.unregister()
+        case "status": break
+        default: print("Use --login-item on, off or status"); exit(2)
+        }
+        switch SMAppService.mainApp.status {
+        case .enabled: print("enabled")
+        case .requiresApproval: print("requiresApproval")
+        default: print("disabled")
+        }
+        exit(0)
+    } catch { print("Login item could not be updated: \(error.localizedDescription)"); exit(1) }
+}
 
 if commandLineArguments.contains("--history-enable") {
     UserDefaults.standard.set(true, forKey: "shareClaudeCodeHistory")

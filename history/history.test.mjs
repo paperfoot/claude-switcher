@@ -14,7 +14,7 @@ import {
   prepare,
   restore,
 } from './history.mjs';
-import {layout, undo, desktopHasWorkers} from './transplant.mjs';
+import {layout, undo, desktopHasWorkers, parseProcesses} from './transplant.mjs';
 
 const ACCOUNT_A = '10000000-0000-4000-8000-000000000001';
 const ORG_A = '20000000-0000-4000-8000-000000000001';
@@ -37,11 +37,22 @@ const rejectsCode = (promise, code) => assert.rejects(promise, error => {
 });
 
 test('Desktop workers defer transfer, while standalone CLI and ordinary renderer processes do not', () => {
-  const app = {pid: 10, desktopPid: 10, worker: true};
-  const renderer = {pid: 11, desktopPid: 10, worker: false};
-  const terminal = {pid: 12, desktopPid: null, worker: true};
+  const app = {pid: 10, desktopPid: 10, codeWorker: true};
+  const renderer = {pid: 11, desktopPid: 10, codeWorker: false};
+  const terminal = {pid: 12, desktopPid: null, codeWorker: true};
   assert.equal(desktopHasWorkers('', [app, renderer, terminal]), false);
-  assert.equal(desktopHasWorkers('', [app, renderer, {pid: 13, desktopPid: 10, worker: true}]), true);
+  assert.equal(desktopHasWorkers('', [app, renderer, {pid: 13, desktopPid: 10, codeWorker: true}]), true);
+});
+
+test('MCP connector wrappers do not count as Desktop Code workers', () => {
+  const app = '/Applications/Claude.app';
+  const prefix = 'Thu Oct  1 13:10:48 2026';
+  const processes = `10 1 ${prefix} ${app}/Contents/MacOS/Claude\n11 10 ${prefix} ${app}/Contents/Helpers/disclaimer\n12 11 ${prefix} npm exec @modelcontextprotocol/server-filesystem /tmp/Claude/\n`;
+  const commands = `10 1 ${prefix} ${app}/Contents/MacOS/Claude\n11 10 ${prefix} ${app}/Contents/Helpers/disclaimer --pgroup -- npx server-filesystem\n12 11 ${prefix} npm exec @modelcontextprotocol/server-filesystem /tmp/Claude/\n`;
+  assert.equal(desktopHasWorkers(app, parseProcesses(processes, commands, app)), false);
+  const sdk = `13 10 ${prefix} ${app}/Contents/Helpers/disclaimer\n`;
+  const sdkCommand = `13 10 ${prefix} ${app}/Contents/Helpers/disclaimer --pgroup -- /tmp/claude --output-format stream-json --input-format stream-json\n`;
+  assert.equal(desktopHasWorkers(app, parseProcesses(processes + sdk, commands + sdkCommand, app)), true);
 });
 
 async function temporaryHome(t) {
@@ -363,5 +374,36 @@ test('normal quit timestamp updates do not invalidate an otherwise unchanged tra
   const prepared = await prepare(fixture.ctx, fixture.identity);
   await writeJSON(fixture.sourceFile, {...sourceRecord(fixture.cwd), lastFocusedAt: Date.now(), lastActivityAt: Date.now()});
   assert.equal((await applyPrepared(fixture.ctx, prepared.token)).moved, 1);
+  assert.equal((await restore(fixture.ctx)).ok, true);
+});
+
+test('unrelated imported projects stay intact and are not rescanned during a transfer', async t => {
+  const fixture = await historyFixture(t);
+  const otherCwd = path.join(fixture.userHome, 'work/other');
+  const otherRecord = path.join(fixture.targetDir, `local_${OTHER_SESSION}.json`);
+  const otherTranscript = path.join(fixture.userHome, '.claude/projects', otherCwd.replace(/[^A-Za-z0-9]/g, '-'), `${OTHER_SESSION}.jsonl`);
+  await fs.mkdir(otherCwd, {recursive: true});
+  await fs.mkdir(path.dirname(otherTranscript), {recursive: true});
+  await fs.writeFile(otherTranscript, transcriptFixture(otherCwd).replaceAll(SESSION, OTHER_SESSION));
+  await writeJSON(otherRecord, {...sourceRecord(otherCwd), sessionId: `local_${OTHER_SESSION}`, cliSessionId: OTHER_SESSION});
+  const original = await fs.readFile(otherRecord);
+  const planned = await plan(fixture.ctx, fixture.identity);
+  assert.equal(planned.target.sessions.length, 1);
+  assert.equal(planned.inv.targets.length, 0);
+  assert.equal(planned.summary.count, 1);
+  const prepared = await prepare(fixture.ctx, fixture.identity);
+  assert.equal((await applyPrepared(fixture.ctx, prepared.token)).moved, 1);
+  assert.deepEqual(await fs.readFile(otherRecord), original);
+  assert.equal((await restore(fixture.ctx)).ok, true);
+  assert.deepEqual(await fs.readFile(otherRecord), original);
+});
+
+test('a removed project folder does not hide its saved conversation', async t => {
+  const fixture = await historyFixture(t);
+  await fs.rmdir(fixture.cwd);
+  const prepared = await prepare(fixture.ctx, fixture.identity);
+  assert.equal((await applyPrepared(fixture.ctx, prepared.token)).moved, 1);
+  assert.equal(JSON.parse(await fs.readFile(fixture.targetFile, 'utf8')).cwd, fixture.cwd);
+  assert.equal(await fs.readFile(fixture.transcript, 'utf8'), fixture.transcriptBytes);
   assert.equal((await restore(fixture.ctx)).ok, true);
 });
