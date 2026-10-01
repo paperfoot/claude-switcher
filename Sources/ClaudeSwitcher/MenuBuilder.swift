@@ -28,6 +28,9 @@ enum MenuBuilder {
         var toggleBlockUpdates: Selector
         var installUpdate: Selector
         var quit: Selector
+        var toggleHistory: Selector = NSSelectorFromString("toggleHistory:")
+        var syncHistory: Selector = NSSelectorFromString("syncHistory:")
+        var undoHistory: Selector = NSSelectorFromString("undoHistory:")
     }
 
     struct Input {
@@ -62,6 +65,9 @@ enum MenuBuilder {
         var browserConnected = false
         var switching = false
         var switchMessage: String?
+        var historyEnabled = false
+        var historyBusy = false
+        var historyMessage: String?
     }
 
     // MARK: - Build
@@ -91,9 +97,6 @@ enum MenuBuilder {
         }
         if input.coordinated {
             if let message = input.switchMessage { menu.addItem(detailItem(message, id: "claude.status")) }
-            else if !input.browserConnected || input.browserEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") != .orderedSame {
-                menu.addItem(actionItem(input.browserConnected ? "Connect this Chrome account…" : "Connect Chrome…", action: actions.setupSwitching, target: target))
-            }
         }
         if !input.codexAccounts.isEmpty {
             menu.addItem(.separator())
@@ -118,7 +121,6 @@ enum MenuBuilder {
             }
         }
         menu.addItem(.separator())
-        menu.addItem(actionItem(input.coordinated ? "Connect Claude…" : "Add Claude account…", action: input.coordinated ? actions.setupSwitching : actions.addProfile, target: target))
 
         let desktop = NSMenu()
         desktop.autoenablesItems = false
@@ -148,8 +150,19 @@ enum MenuBuilder {
             desktop.addItem(.separator())
             desktop.addItem(actionItem("Install Claude \(update.staged)…", action: actions.installUpdate, target: target))
         }
-        menu.addItem(submenuItem("Claude Desktop", menu: desktop))
-
+        desktop.addItem(.separator())
+        let history = actionItem("Share Code history", action: actions.toggleHistory, target: target)
+        history.state = input.historyEnabled ? .on : .off
+        history.isEnabled = !input.historyBusy
+        history.toolTip = "Keep local Code conversations when the Desktop account changes. Claude reopens when its sessions are idle."
+        desktop.addItem(history)
+        let sync = actionItem(input.historyBusy ? "Updating history…" : "Sync history now", action: actions.syncHistory, target: target)
+        sync.isEnabled = !input.historyBusy && !input.isBusy
+        desktop.addItem(sync)
+        let undo = actionItem("Undo last history move", action: actions.undoHistory, target: target)
+        undo.isEnabled = !input.historyBusy && !input.isBusy
+        desktop.addItem(undo)
+        if let message = input.historyMessage { desktop.addItem(informationalItem(message)) }
         let settings = NSMenu()
         settings.autoenablesItems = false
         let login = actionItem("Open at login", action: actions.toggleLaunchAtLogin, target: target)
@@ -162,6 +175,13 @@ enum MenuBuilder {
         case .unavailable: login.isEnabled = false
         }
         settings.addItem(login)
+        settings.addItem(.separator())
+        settings.addItem(actionItem(input.coordinated ? "Connect Claude…" : "Add Claude account…", action: input.coordinated ? actions.setupSwitching : actions.addProfile, target: target))
+        if input.coordinated,
+           !input.browserConnected || input.browserEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") != .orderedSame {
+            settings.addItem(actionItem(input.browserConnected ? "Connect this Chrome account…" : "Connect Chrome…", action: actions.setupSwitching, target: target))
+        }
+        settings.addItem(submenuItem("Claude Desktop", menu: desktop))
 
         let commands = NSMenu()
         let rename = NSMenu()
@@ -176,7 +196,6 @@ enum MenuBuilder {
             item.toolTip = "Remove from this menu. Account data stays on this Mac."
             remove.addItem(item)
         }
-        settings.addItem(actionItem("Set up Claude switching…", action: actions.setupSwitching, target: target))
         settings.addItem(submenuItem("Copy terminal command", menu: commands))
         settings.addItem(submenuItem("Rename desktop profile", menu: rename))
         settings.addItem(submenuItem("Remove account", menu: remove))
@@ -207,10 +226,6 @@ enum MenuBuilder {
         quit.isEnabled = input.updateProgress == nil
         settings.addItem(quit)
         menu.addItem(submenuItem("Settings", menu: settings))
-        let padding = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        padding.view = MenuDetailView(text: "", height: 3)
-        padding.isEnabled = false
-        menu.addItem(padding)
         return menu
     }
 
