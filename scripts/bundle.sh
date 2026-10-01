@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.8.1}"
+VERSION="${VERSION:-0.9.0}"
 APP_NAME="Claude Switcher"
 EXEC_NAME="claude-switcher"
 BUNDLE_ID="tech.local.claude-switcher"
@@ -51,6 +51,8 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
 cp -R "$ROOT/browser-extension" "$CONTENTS/Resources/BrowserExtension"
 cp -R "$ROOT/bridge" "$CONTENTS/Resources/Bridge"
+mkdir -p "$CONTENTS/Resources/History"
+cp "$ROOT/history/history.mjs" "$ROOT/history/transplant.mjs" "$CONTENTS/Resources/History/"
 cp "$ROOT/assets/setup.html" "$CONTENTS/Resources/setup.html"
 cp "$ROOT/LICENSE" "$CONTENTS/Resources/LICENSE"
 cp -R "$ROOT/ThirdParty" "$CONTENTS/Resources/ThirdParty"
