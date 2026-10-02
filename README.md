@@ -105,7 +105,9 @@ Turn on **Settings → Claude Desktop → Share Code history** to carry local Co
 
 After a verified Desktop sign-in, the switcher waits for open Code processes to close, then normally quits Claude, copies missing sidebar entries and reopens the same Desktop profile. Existing entries in both accounts are preserved. Project paths, conversation IDs, transcripts and sidecars stay in place. This feature follows the account signed into Desktop; selecting a Chrome/Code account does not sign Desktop in.
 
-Only accounts already configured in the switcher are included. Missing transcripts are skipped. Changed or conflicting records and scheduled sessions stop the transfer. History from a removed project folder remains available; restore or select its folder before resuming work. Account-specific connector settings, permissions and Remote Control links are cleared from the destination records. Claude may ask for those permissions again. Cloud chats and Cowork sessions are excluded.
+Only accounts already configured in the switcher are included. Missing transcripts are skipped. Changed or conflicting records and scheduled sessions stop the transfer. History from a removed project folder remains available; restore or select its folder before resuming work. New copies use your `permissions.defaultMode` from `~/.claude/settings.json`, or Manual if unset. Account-specific connector grants and Remote Control links are cleared. Cloud chats and Cowork sessions are excluded.
+
+Desktop also remembers permission modes per folder and per session. Bypass requires the account's **Allow bypass permissions mode** setting. Browser and macOS approval prompts have separate controls; see [Claude's permission modes](https://code.claude.com/docs/en/permission-modes#switch-permission-modes).
 
 For terminal sessions that have never appeared in Desktop, use Claude's **Help → Troubleshooting → Import Claude Code CLI Sessions…**. Claude imports eligible local transcripts and refreshes its sidebar immediately. The switcher can then carry those entries across your configured Desktop accounts.
 
