@@ -37,7 +37,7 @@ const rejectsCode = (promise, code) => assert.rejects(promise, error => {
 });
 
 test('Desktop workers defer transfer, while standalone CLI and ordinary renderer processes do not', () => {
-  const app = {pid: 10, desktopPid: 10, codeWorker: true};
+  const app = {pid: 10, desktopPid: 10, codeWorker: true, executable: 'Contents/MacOS/Claude'};
   const renderer = {pid: 11, desktopPid: 10, codeWorker: false};
   const terminal = {pid: 12, desktopPid: null, codeWorker: true};
   assert.equal(desktopHasWorkers('', [app, renderer, terminal]), false);
