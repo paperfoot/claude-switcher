@@ -107,7 +107,7 @@ export async function context() {
   return {config, roots, known, userHome: home, logs: path.join(home, 'Library/Logs/Claude'), state: path.join(base, 'desktop-history')};
 }
 
-async function logText(root) {
+export async function logText(root) {
   const names = (await fs.readdir(root)).filter(name => /^main(?:\d+)?\.log$/.test(name));
   const files = (await Promise.all(names.map(async name => ({name, at:(await fs.stat(path.join(root,name))).mtimeMs})))).sort((a,b)=>a.at-b.at).map(row=>row.name);
   const rows = [];
@@ -209,13 +209,14 @@ export async function restore(ctx) {
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   const ctx = await context();
-  if (command === 'apply') return applyPrepared(ctx, args[0]);
-  if (command === 'undo') return restore(ctx);
+  const copy = await import('./copy.mjs');
+  if (command === 'apply') return copy.applyCopy(ctx, args[0]);
+  if (command === 'undo') return copy.undoCopy(ctx);
   if (!['probe', 'plan', 'prepare'].includes(command)) fail('unknown_command');
   const identity = await currentIdentity(ctx, args[0], Number(args[1]), Number(args[2]));
   if (command === 'probe') return {ok:true, email:identity.email, identity};
-  if (command === 'prepare') return prepare(ctx, identity);
-  return (await plan(ctx, identity)).summary;
+  if (command === 'prepare') return copy.prepareCopy(ctx, identity);
+  return (await copy.planCopy(ctx, identity)).summary;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().then(result => process.stdout.write(JSON.stringify(result)+'\n')).catch(error => {

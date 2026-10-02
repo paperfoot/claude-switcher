@@ -168,7 +168,10 @@ const processTable = (app) => {
   return parseProcesses(processes.stdout, commands.stdout, app, registrations)
 }
 const workers = (rows = processTable()) => Object.assign(new Set(rows.filter((row) => row.worker && row.pid !== row.desktopPid).flatMap((row) => row.ids)), { rows })
-export const desktopHasWorkers = (app, rows = processTable(app)) => rows.some(row => row.codeWorker && row.desktopPid && row.pid !== row.desktopPid)
+export const desktopHasWorkers = (app, rows = processTable(app)) => {
+  const desktopPids = new Set(rows.filter(row => row.executable === path.join(app, 'Contents/MacOS/Claude')).map(row => row.pid))
+  return rows.some(row => row.codeWorker && desktopPids.has(row.desktopPid) && row.pid !== row.desktopPid)
+}
 const ownsWorker = (live, id, recordId) => Boolean(live?.has(id?.toLowerCase()) || live?.has(recordId?.replace(/^local_/, '').toLowerCase()))
 const processIdentity = (row) => `${row.pid}/${row.started}`
 const restartFingerprint = (desktop, rows) => sha(stable({ desktop: { pid: desktop.pid, started: desktop.started },
@@ -517,7 +520,7 @@ async function quarantine(items, dest) {
   }
 }
 
-async function locked(paths, work) {
+export async function locked(paths, work) {
   await mkdir(paths.state, { recursive: true })
   const lockFile = path.join(paths.state, 'lock')
   const guard = spawn('/usr/bin/lockf', ['-k', '-s', '-w', '-t', '0', lockFile, '/bin/sh', '-c', 'printf ready; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] })
