@@ -12,9 +12,17 @@ const fail = code => { throw new HistoryError(code); };
 const key = r => `${r.cliSessionId}/${r.cwd}`;
 const semantic = r => JSON.stringify({...r, lastActivityAt: null, lastFocusedAt: null});
 
-function cleanRecord(record) {
+async function userPermissionMode(ctx) {
+  const file = path.join(ctx.userHome, '.claude/settings.json');
+  await noSymlinks(file);
+  const settings = await json(file).catch(error => { if (error.code === 'ENOENT') return {}; throw error; });
+  const mode = settings.permissions?.defaultMode;
+  return ['default', 'acceptEdits', 'bypassPermissions', 'auto', 'plan', 'dontAsk'].includes(mode) ? mode : 'default';
+}
+
+function cleanRecord(record, permissionMode) {
   const copy = {...record, bridgeSessionIds: [], remoteControlAutoEligible: false,
-    steeredByRemoteClient: false, permissionMode: 'default', alwaysAllowedReasons: [], sessionPermissionUpdates: []};
+    steeredByRemoteClient: false, permissionMode, alwaysAllowedReasons: [], sessionPermissionUpdates: []};
   for (const field of ['remoteMcpServersConfig', 'enabledMcpTools', 'chromePermissionMode',
     'toolSurfaceSnapshot', 'promptAppendSnapshot', 'sessionSettings', 'spawnSeed']) delete copy[field];
   return copy;
@@ -59,6 +67,7 @@ async function transcriptIndex(userHome) {
 export async function planCopy(ctx, identity) {
   if (!ctx.roots.includes(identity.root) || ctx.known.get(`${identity.account}/${identity.org}`) !== identity.email) fail('identity_changed');
   if (desktopHasWorkers(ctx.config.claudeAppPath)) fail('desktop_busy');
+  const permissionMode = await userPermissionMode(ctx);
   const targetDir = path.join(identity.root, 'claude-code-sessions', identity.account, identity.org);
   const targetRows = await listRecords(targetDir);
   const existing = new Map(targetRows.map(row => [key(row.record), row]));
@@ -101,11 +110,12 @@ export async function planCopy(ctx, identity) {
   } while (changed);
   entries.sort((a,b) => a.target.localeCompare(b.target));
   const selectionHash = hash(JSON.stringify({
+    permissionMode,
     sources: entries.map(row => [row.file, semantic(row.record)]),
     target: targetRows.map(row => [row.file, semantic(row.record)])
   }));
   if (desktopHasWorkers(ctx.config.claudeAppPath)) fail('desktop_busy');
-  return {entries, selectionHash, targetDir,
+  return {entries, selectionHash, targetDir, permissionMode,
     summary: {ok: true, email: identity.email, count: entries.length, unavailable, identity}};
 }
 
@@ -144,7 +154,7 @@ export async function applyCopy(ctx, token) {
     if (previous) await atomicJSON(path.join(ctx.state, 'copies', `${previous.id}.json`), previous);
     const id = randomUUID();
     const entries = result.entries.map(row => {
-      const text = JSON.stringify(cleanRecord(row.record));
+      const text = JSON.stringify(cleanRecord(row.record, result.permissionMode));
       return {source: row.file, target: row.target, sha: hash(text), text};
     });
     const receipt = {id, status: 'pending', targetRoot: identity.root, entries: entries.map(({text, ...row}) => row)};
