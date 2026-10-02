@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.9.2}"
+VERSION="${VERSION:-0.9.3}"
 APP_NAME="Claude Switcher"
 EXEC_NAME="claude-switcher"
 BUNDLE_ID="tech.local.claude-switcher"
