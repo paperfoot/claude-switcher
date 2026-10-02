@@ -103,15 +103,15 @@ Claude's cookie and credential formats are not public compatibility contracts. C
 
 Turn on **Settings → Claude Desktop → Share Code history** to carry local Code conversations across Desktop accounts. This requires Node.js 22 or newer at `~/.local/bin/node`, `/opt/homebrew/bin/node`, or `/usr/local/bin/node`.
 
-After a verified Desktop sign-in, the switcher waits for open Code processes to close, then normally quits Claude, transfers eligible sidebar records and reopens the same Desktop profile. Project paths, conversation IDs, transcripts and sidecars stay in place. This feature follows the account signed into Desktop; selecting a Chrome/Code account does not sign Desktop in.
+After a verified Desktop sign-in, the switcher waits for open Code processes to close, then normally quits Claude, copies missing sidebar entries and reopens the same Desktop profile. Existing entries in both accounts are preserved. Project paths, conversation IDs, transcripts and sidecars stay in place. This feature follows the account signed into Desktop; selecting a Chrome/Code account does not sign Desktop in.
 
 Only accounts already configured in the switcher are included. Missing transcripts are skipped. Changed or conflicting records and scheduled sessions stop the transfer. History from a removed project folder remains available; restore or select its folder before resuming work. Account-specific connector settings, permissions and Remote Control links are cleared from the destination records. Claude may ask for those permissions again. Cloud chats and Cowork sessions are excluded.
 
 For terminal sessions that have never appeared in Desktop, use Claude's **Help → Troubleshooting → Import Claude Code CLI Sessions…**. Claude imports eligible local transcripts and refreshes its sidebar immediately. The switcher can then carry those entries across your configured Desktop accounts.
 
-**Sync history now** retries a stopped transfer. Recovery records live privately in `~/.config/claude-switcher/desktop-history`. **Undo last history move** restores the previous sidebar records while Claude is closed and disables automatic sharing. Undo refuses changed destination records; newer transcript content stays intact.
+**Sync history now** retries a stopped sync. Recovery records live privately in `~/.config/claude-switcher/desktop-history`. **Undo last history sync** removes the entries added by the latest sync while Claude is closed and disables automatic sharing. Undo refuses changed destination records; original account entries and newer transcript content stay intact.
 
-The transfer engine is adapted from [claude-transplant 4.1.0](https://github.com/vitaliyhayda/claude-transplant). See the [pinned source and local changes](ThirdParty/ClaudeTransplant-NOTICE.md).
+Sidebar syncing copies small local records without rescanning conversation contents. Atomic file writes, process checks, locking and legacy recovery use code adapted from [claude-transplant 4.1.0](https://github.com/vitaliyhayda/claude-transplant). See the [pinned source and local changes](ThirdParty/ClaudeTransplant-NOTICE.md).
 
 ## Diagnostics
 
@@ -133,7 +133,7 @@ Enable startup through **Settings → Open at login**, or run the installed exec
 ```sh
 swift test
 scripts/check-menu-refresh.sh
-node --test history/history.test.mjs
+node --test history/*.test.mjs
 node --test browser-extension/*.test.js
 python3 -m unittest discover -s bridge -p 'test_*.py'
 swift build -c release
