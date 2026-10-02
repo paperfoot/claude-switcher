@@ -194,6 +194,24 @@ test('plan after copy reports no work', async t => {
   assert.equal(repeated.summary.unavailable, 0);
 });
 
+test('new copies respect the explicit user-level permission default', async t => {
+  const fixture = await copyFixture(t);
+  await writeJSON(path.join(fixture.userHome, '.claude/settings.json'), {permissions: {defaultMode: 'bypassPermissions'}});
+  const prepared = await prepareCopy(fixture.ctx, fixture.identity);
+  await applyCopy(fixture.ctx, prepared.token);
+  const target = JSON.parse(await fs.readFile(fixture.targetFile, 'utf8'));
+  assert.equal(target.permissionMode, 'bypassPermissions');
+  assert.deepEqual(target.alwaysAllowedReasons, []);
+  assert.equal(target.remoteMcpServersConfig, undefined);
+});
+
+test('changing the user permission default invalidates a prepared copy', async t => {
+  const fixture = await copyFixture(t);
+  const prepared = await prepareCopy(fixture.ctx, fixture.identity);
+  await writeJSON(path.join(fixture.userHome, '.claude/settings.json'), {permissions: {defaultMode: 'bypassPermissions'}});
+  await rejectsCode(applyCopy(fixture.ctx, prepared.token), 'sessions_changed');
+});
+
 test('an interrupted copy can be undone before retrying without changing its source', async t => {
   const fixture = await copyFixture(t);
   const prepared = await prepareCopy(fixture.ctx, fixture.identity);
