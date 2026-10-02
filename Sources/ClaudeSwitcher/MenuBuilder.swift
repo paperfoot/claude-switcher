@@ -159,7 +159,7 @@ enum MenuBuilder {
         let sync = actionItem(input.historyBusy ? "Updating history…" : "Sync history now", action: actions.syncHistory, target: target)
         sync.isEnabled = !input.historyBusy && !input.isBusy
         desktop.addItem(sync)
-        let undo = actionItem("Undo last history move", action: actions.undoHistory, target: target)
+        let undo = actionItem("Undo last history sync", action: actions.undoHistory, target: target)
         undo.isEnabled = !input.historyBusy && !input.isBusy
         desktop.addItem(undo)
         if let message = input.historyMessage { desktop.addItem(informationalItem(message)) }

@@ -33,12 +33,14 @@ public struct DesktopHistoryResult: Codable, Sendable {
         case "desktop_not_ready": return "Open one Claude Desktop profile to share history"
         case "unknown_account": return "Add this Desktop account to the switcher first"
         case "scheduled_sessions": return "Scheduled sessions need a separate transfer"
-        case "sessions_busy_or_conflicted": return "History waiting · finish active Code sessions"
+        case "sessions_busy_or_conflicted": return "History contains conflicting session records"
+        case "copy_recovery_required": return "Undo the interrupted history sync, then retry"
+        case "history_locked": return "Another history sync is finishing"
         case "desktop_busy": return "History waiting · close open Code sessions"
         case "desktop_running": return "Claude is still closing · try again"
         case "sessions_changed", "identity_changed", "plan_expired": return "Claude changed · try history sync again"
         case "project_missing": return "A session’s project folder is missing"
-        case "undo_changed": return "History changed since the move · undo stopped"
+        case "undo_changed": return "History changed since the sync · undo stopped"
         default: return "History needs attention · try again"
         }
     }
