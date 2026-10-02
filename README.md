@@ -95,9 +95,9 @@ Readings refresh in the background about every five minutes and when due after w
 - **Chrome:** a Manifest V3 extension saves Claude.ai sessions in the Mac's **Keychain**, through a local native-messaging host. It verifies the current email before saving, checks the restored email after switching, and restores the previous cookies if switching fails. No cookies are saved in extension storage or exported by diagnostics.
 - **Connection:** a private local Unix socket connects the menu app to Chrome's native host. The host accepts the companion's exact extension origin. There is no listening network port or remote debugging connection.
 
-The extension touches Claude.ai cookies only. It does not switch Google accounts, Gmail, or unrelated sites. All Claude.ai tabs within the connected Chrome profile share the selected login; switching can reload them. Claude Desktop still has a separate sign-in and is available under **Settings → Claude Desktop**.
+The companion touches Claude.ai cookies only. It does not switch Google accounts, Gmail, or unrelated sites. All Claude.ai tabs within the connected Chrome profile share the selected login; switching can reload them. **Anthropic's Claude Chrome extension has a separate OAuth login and is not switched by this companion.** Claude Desktop also has a separate sign-in and is available under **Settings → Claude Desktop**.
 
-Claude's cookie and credential formats are not public compatibility contracts. Changes in Claude can require maintenance. Chrome switching is supported for one connected regular browser profile at a time.
+Claude's cookie and credential formats are not public compatibility contracts. Changes in Claude can require maintenance. Chrome switching is supported for one connected regular browser profile at a time. See the [multi-profile extension investigation](docs/chrome-extension-switching.md) for the remaining work.
 
 ## Claude Desktop Code history
 
