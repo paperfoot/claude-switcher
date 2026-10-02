@@ -18,6 +18,8 @@ The installed app stores account opt-ins and folder choices under `preferences` 
 
 Session records have their own `permissionMode`. Changing the global default does not change the mode of a running task. The mode picker updates both the live process and the saved record.
 
+The installed app may restart a session's Code worker when switching to Bypass if that worker was launched without bypass support. During an active response, the change can instead fail with “Permission mode couldn’t be changed.” A fresh local session was verified to show Bypass after enabling the account opt-in and user default; two existing sessions also saved the new mode. A third running session rejected the change. This does not require quitting the Desktop app, but the existing worker may need to finish and restart.
+
 ## Remaining prompts
 
 Bypass does not remove every approval. Browser safety checks, macOS permissions, explicit ask rules, managed connector policy, and some destructive-operation checks remain separate.
