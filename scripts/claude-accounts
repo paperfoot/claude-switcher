@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Agent entry point for the installed Claude Switcher."""
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Inspect or switch saved Claude accounts. Output is JSON.')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('accounts', help='List saved Claude Code accounts and usage status')
+    commands.add_parser('chrome-status', help='Show the verified account in each connected Chrome profile')
+    chrome = commands.add_parser('chrome', help='Switch Claude.ai in connected Chrome profiles; leave Code unchanged')
+    chrome.add_argument('email')
+    chrome.add_argument('--expect-profiles', type=int, default=1,
+                        help='Fail before switching if fewer profiles are connected')
+    both = commands.add_parser('claude', help='Switch Claude Code and all connected Chrome profiles')
+    both.add_argument('email')
+    args = parser.parse_args()
+    if args.command == 'accounts':
+        executable = '/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher'
+        os.execv(executable, [executable, '--accounts'])
+    try:
+        setup = json.loads((Path.home() / '.config/claude-switcher/coordinated.json').read_text())
+        if not setup.get('enabled'):
+            raise ValueError()
+        python, helper = setup['python'], setup['helper']
+        if not Path(python).is_file() or not Path(helper).is_file():
+            raise ValueError()
+    except (OSError, ValueError, KeyError):
+        print(json.dumps({'ok': False, 'error': 'setup_required'}))
+        return 1
+    if args.command == 'chrome':
+        if args.expect_profiles < 1:
+            parser.error('--expect-profiles must be at least 1')
+        command = ['browser-switch', args.email, '--expect-profiles', str(args.expect_profiles)]
+    elif args.command == 'claude':
+        command = ['switch', args.email]
+    else:
+        command = ['browser-status']
+    os.execv(python, [python, helper, *command])
+
+
+if __name__ == '__main__':
+    sys.exit(main())
