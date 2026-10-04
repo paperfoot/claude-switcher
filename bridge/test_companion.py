@@ -629,6 +629,31 @@ class CompanionTests(unittest.TestCase):
         )
         self.assertEqual(json.loads(self.state.read_text())["selectedAt"], selected_at)
 
+    def test_browser_only_does_not_read_or_change_code(self):
+        result = companion.select_browser(TARGET_EMAIL, expected_profiles=2)
+        self.assertTrue(result['ok'])
+        self.browser_request.assert_called_once_with('switch', TARGET_EMAIL, expected_profiles=2)
+        self.code_identity.assert_not_called()
+        self.switch_code.assert_not_called()
+        self.run_backend.assert_not_called()
+        self.assertFalse(self.state.exists())
+
+    def test_browser_only_refuses_during_another_account_switch(self):
+        self.base.mkdir()
+        with open(self.base / 'switch.lock', 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(companion.select_browser(TARGET_EMAIL),
+                             {'ok': False, 'error': 'switch_in_progress'})
+        self.browser_request.assert_not_called()
+        self.switch_code.assert_not_called()
+
+    def test_popup_selection_excludes_its_waiting_native_host(self):
+        self.browser_request.return_value = {'ok': True, 'email': TARGET_EMAIL}
+        result = self.handle_native({'action': 'select', 'email': TARGET_EMAIL})
+        self.assertTrue(result['ok'])
+        self.browser_request.assert_called_once_with('switch', TARGET_EMAIL,
+                                                     expected_profiles=0, exclude=companion.SOCKET)
+
     def test_invalid_email_is_rejected_before_any_external_call(self):
         self.validate_email.side_effect = ValueError("unknown_account")
 
