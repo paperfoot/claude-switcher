@@ -94,12 +94,23 @@ def switch_code(email):
         raise RuntimeError('code_identity_mismatch')
 
 
-def browser_request(command, email=None):
-    from native_transport import send_request
-    result = send_request(str(SOCKET), command, email, timeout=170)
-    if result.get('error') == 'host_unavailable':
-        return {'ok': False, 'error': 'browser_missing', 'accounts': []}
-    return result
+def browser_request(command, email=None, expected_profiles=1, exclude=None):
+    try:
+        from . import browser_profiles
+    except ImportError:
+        import browser_profiles
+    if command == 'status':
+        return browser_profiles.status(BASE)
+    email = validate_email(email)
+    BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(BASE / 'chrome-switch.lock', 'a') as lock:
+        os.chmod(lock.name, 0o600)
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
+        result = browser_profiles.switch(BASE, email, expected_profiles, exclude)
+        if result.get('error') == 'browser_profiles_missing' and result.get('profileCount') == 0 and expected_profiles == 1:
+            result['error'] = 'browser_missing'
+        return result
 
 
 def browser_state():
@@ -107,6 +118,16 @@ def browser_state():
         return browser_request('status')
     except (OSError, TimeoutError, ValueError):
         return {'ok': False, 'error': 'browser_missing', 'accounts': []}
+
+
+def select_browser(email, expected_profiles=1):
+    email = validate_email(email)
+    BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(BASE / 'switch.lock', 'a') as lock:
+        os.chmod(lock.name, 0o600)
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
+        return browser_request('switch', email, expected_profiles=expected_profiles)
 
 
 def select_account(email, include_browser=True, verified_browser=False):
@@ -128,7 +149,8 @@ def select_account(email, include_browser=True, verified_browser=False):
             return {'ok': False, 'error': 'code_switch_failed'}
         web = {'ok': True, 'email': email} if verified_browser else {'ok': False, 'error': 'browser_missing'}
         if include_browser:
-            try: web = browser_request('switch', email)
+            try:
+                web = browser_request('switch', email, expected_profiles=0, exclude=SOCKET) if verified_browser else browser_request('switch', email)
             except FileNotFoundError: pass
             except (OSError, TimeoutError, ValueError):
                 web = {'ok': False, 'error': 'web_unavailable'}
@@ -183,8 +205,11 @@ def handle_native(message):
             if len(encoded) > 512_000: raise ValueError()
             macos_keychain.set_password(service, email, encoded)
             if macos_keychain.get_password(service, email) != encoded: raise RuntimeError()
-            emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
-            atomic_json(BASE / 'web-accounts.json', sorted(set(emails + [email])))
+            with open(BASE / 'web-accounts.lock', 'a') as lock:
+                os.chmod(lock.name, 0o600)
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
+                atomic_json(BASE / 'web-accounts.json', sorted(set(emails + [email])))
             return {'ok': True}
         if action == 'vault_list':
             emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
@@ -206,22 +231,36 @@ def handle_native(message):
                 atomic_json(STATE, state)
             return {'ok': True}
         if action == 'select':
-            # The extension has already switched and verified Chrome; don't ask it recursively.
-            return select_account(message.get('email'), include_browser=False, verified_browser=True)
+            # The initiating profile is waiting for this reply; contact only the other hosts.
+            return select_account(message.get('email'), verified_browser=True)
         return {'ok': False, 'error': 'unknown_action'}
     except Exception:
         return {'ok': False, 'error': 'Account could not be saved or opened. Unlock your Keychain and try again.'}
 
 
 def main():
+    global SOCKET
     command = sys.argv[1] if len(sys.argv) > 1 else ''
     if command == 'native':
         from native_transport import run_host
+        from profile_transport import native_socket
+        SOCKET = native_socket(BASE)
         origin = sys.argv[2] if len(sys.argv) > 2 else ''
         ident = (Path(__file__).parent / 'extension_id.txt').read_text().strip()
         raise SystemExit(run_host(origin, 'chrome-extension://' + ident + '/', str(SOCKET), handle_native))
     try:
-        result = snapshot() if command == 'snapshot' else select_account(sys.argv[2]) if command == 'switch' else {'ok': False, 'error': 'unknown_action'}
+        if command == 'browser-status':
+            result = browser_state()
+        elif command == 'browser-switch':
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument('email')
+            parser.add_argument('--expect-profiles', type=int, default=1)
+            args = parser.parse_args(sys.argv[2:])
+            if args.expect_profiles < 1: parser.error('--expect-profiles must be at least 1')
+            result = select_browser(args.email, expected_profiles=args.expect_profiles)
+        else:
+            result = snapshot() if command == 'snapshot' else select_account(sys.argv[2]) if command == 'switch' else {'ok': False, 'error': 'unknown_action'}
     except Exception:
         result = {'ok': False, 'error': 'Backend unavailable. Open Settings → Set up switching.'}
     print(json.dumps(result))
