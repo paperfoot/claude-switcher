@@ -12,7 +12,7 @@ A small native macOS menu bar app with separate Claude and Codex sections. Claud
 ## Claude accounts
 
 1. Choose an email in the menu bar.
-2. Claude.ai uses that account in your connected Chrome profile.
+2. Claude.ai uses that account in each connected Chrome profile.
 3. In your existing Ghostty, iTerm2, or other terminal, stop Code when ready and run `claude --resume` or `claude --continue`.
 
 Switching does not open a terminal. Your working directory, normal `~/.claude` history, and setup stay in place. Already-running Code sessions are not stopped; restarting them is the reliable way to use the selected account immediately. Claude's own credential cache can delay changes inside a running process.
@@ -72,7 +72,7 @@ The setup script imports the Code accounts already configured in `~/.config/clau
 
 Chrome requires a user to load an unpacked extension. The installer does not change browser policies or force-install anything.
 
-1. Open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
+1. In each Chrome profile you want to switch, open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
 2. Select `~/Library/Application Support/Claude Switcher/BrowserExtension`.
 3. Sign in to a configured account at Claude.ai. The companion saves it automatically; its popup shows the detected email and also offers **Save this Claude login**.
 4. Choose **Add another account** in the companion, then sign in to the next account. This clears the browser session locally without calling Claude’s logout endpoint, so saved sessions are not intentionally revoked. Repeat once per configured account.
@@ -97,7 +97,20 @@ Readings refresh in the background about every five minutes and when due after w
 
 The companion touches Claude.ai cookies only. It does not switch Google accounts, Gmail, or unrelated sites. All Claude.ai tabs within the connected Chrome profile share the selected login; switching can reload them. **Anthropic's Claude Chrome extension has a separate OAuth login and is not switched by this companion.** Claude Desktop also has a separate sign-in and is available under **Settings → Claude Desktop**.
 
-Claude's cookie and credential formats are not public compatibility contracts. Changes in Claude can require maintenance. Chrome switching is supported for one connected regular browser profile at a time. See the [multi-profile extension investigation](docs/chrome-extension-switching.md) for the remaining work.
+Claude's cookie and credential formats are not public compatibility contracts. Changes in Claude can require maintenance. Each connected regular Chrome profile has its own local connection. A selection verifies every connected profile; if one rejects it, the coordinator tries to restore the profiles already changed. See the [extension investigation](docs/chrome-extension-switching.md) for Anthropic's separate extension login.
+
+## Agent commands
+
+Install the command with `install -m 755 scripts/claude-accounts ~/.local/bin/claude-accounts`. The [Claude accounts skill](skills/claude-accounts/SKILL.md) gives agents the commands and verification rules; link its folder into your agent's skills directory.
+
+```sh
+claude-accounts accounts
+claude-accounts chrome-status
+claude-accounts chrome person@example.com --expect-profiles 2
+claude-accounts claude person@example.com
+```
+
+`chrome` changes Claude.ai in connected Chrome profiles without changing Claude Code. `--expect-profiles 2` refuses to proceed if fewer than two profiles are connected. The result lists the verified email for each connection. `claude` changes both Chrome and Code. Neither command changes Codex.
 
 ## Claude Desktop Code history
 
