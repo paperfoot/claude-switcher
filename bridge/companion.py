@@ -162,6 +162,7 @@ def select_account(email, include_browser=True, verified_browser=False):
                     try: switch_code(old)
                     except Exception: return {'ok': False, 'error': 'code_restore_failed'}
                 result = {'ok': False, 'error': web.get('error', 'web_unavailable'), 'codeEmail': old}
+                result.update({key: web[key] for key in ('failureStep', 'cookieName', 'failedConnection', 'rolledBack') if key in web})
                 if old is None:
                     # There was no signed-in Code account to restore. Report the actual state.
                     result.update(error='code_only_after_web_failure', codeEmail=email, browserReady=False)
@@ -185,6 +186,8 @@ def snapshot():
 
 
 def handle_native(message):
+    if message.get('action') == 'ping':
+        return {'ok': True}
     from claude_swap import macos_keychain
     service = 'Paperfoot Claude Switcher Web'
     action = message.get('action')

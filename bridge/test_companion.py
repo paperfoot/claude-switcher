@@ -638,6 +638,27 @@ class CompanionTests(unittest.TestCase):
         self.run_backend.assert_not_called()
         self.assertFalse(self.state.exists())
 
+    def test_connection_ping_does_not_access_credentials_or_accounts(self):
+        with mock.patch.dict(sys.modules, {'claude_swap': None}):
+            self.assertEqual(companion.handle_native({'action': 'ping'}), {'ok': True})
+        self.code_identity.assert_not_called()
+        self.switch_code.assert_not_called()
+        self.run_backend.assert_not_called()
+
+    def test_failed_browser_switch_preserves_safe_diagnostics(self):
+        self.browser_request.return_value = {
+            'ok': False, 'error': 'web_switch_failed', 'failureStep': 'restore_cookies',
+            'cookieName': 'sessionKey', 'failedConnection': '12.sock', 'rolledBack': True,
+            'cookieValue': 'must-not-appear', 'rawException': 'must-not-appear',
+        }
+        result = companion.select_account(TARGET_EMAIL)
+        self.assertEqual(result['failureStep'], 'restore_cookies')
+        self.assertEqual(result['cookieName'], 'sessionKey')
+        self.assertEqual(result['failedConnection'], '12.sock')
+        self.assertTrue(result['rolledBack'])
+        self.assertNotIn('must-not-appear', json.dumps(result))
+        self.assert_saved(result)
+
     def test_browser_only_refuses_during_another_account_switch(self):
         self.base.mkdir()
         with open(self.base / 'switch.lock', 'a') as lock:
