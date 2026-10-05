@@ -90,21 +90,28 @@ export class SessionSwitcher {
       }
     }
     let failure = 'web_switch_failed';
+    let failureStep = 'clear_cookies';
+    let cookieName;
     try {
       if (expired()) return {ok:false,error:'browser_timeout',email};
       await this.browser.clear();
+      failureStep = 'restore_cookies';
       for (const entry of details) {
         if (expired()) throw new Error('Switch timed out');
         // Chrome treats setting a past expiry as deletion and can return null.
         // Ancillary cookies may expire hours before the actual Claude login does.
         if (!unexpiredCookie(entry.cookie) || browserScopedCookie(entry.cookie)) continue;
+        cookieName = entry.cookie.name;
         if (!await this.browser.set(entry.details)) throw new Error('Cookie restoration failed');
       }
+      failureStep = 'verify_identity';
+      cookieName = undefined;
       if (await this.probe() !== email) throw new Error('Restored account could not be verified');
       if (expired()) throw new Error('Switch timed out');
       // Keep the browser transaction locked until Code has committed or rolled back.
       // A menu selection must not interleave with a popup selection halfway through.
       if (activateCode) {
+        failureStep = 'activate_code';
         failure = 'code_switch_failed';
         if ((await activateCode(email))?.ok === false) throw new Error('Code activation failed');
       }
@@ -117,8 +124,8 @@ export class SessionSwitcher {
           if (!await this.browser.set(cookieDetails(cookie))) throw new Error('restore failed');
         }
         if (await this.probe() !== oldIdentity) throw new Error('identity mismatch');
-      } catch { return {ok:false,error:'web_restore_failed',email}; }
-      return {ok:false,error:failure,email};
+      } catch { return {ok:false,error:'web_restore_failed',email,failureStep,...(cookieName?{cookieName}:{})}; }
+      return {ok:false,error:failure,email,failureStep,...(cookieName?{cookieName}:{})};
     }
     await this.browser.refresh(target.url);
     return {ok:true,email};
