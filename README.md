@@ -139,6 +139,10 @@ APP="/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher"
 
 Diagnostics contain account emails and usage, not tokens or cookies. Redact personal details before posting an issue. An `ok: true` result with `browserReady: false` means Code switched and Chrome still needs setup.
 
+If Chrome switching fails, reload **Claude Switcher Companion** at `chrome://extensions` in each connected profile and retry once. Failed switches report the connection and restore step; cookie-write failures include the cookie name, never its value. A failed restore does not necessarily mean the login expired.
+
+While Chrome is open, the companion checks its local connection each minute and reconnects if it stops responding. Every five minutes it verifies and saves the current browser login, including renewed session cookies. These checks do not change the selected account or touch inactive Code refresh tokens. Claude can still expire or revoke saved logins.
+
 Settings and usage cache live in `~/.config/claude-switcher/`, with private file permissions. The installed companion lives in `~/Library/Application Support/Claude Switcher/`. The Code backend manages its own account store under `~/.claude-swap-backup/`.
 
 ## Development
