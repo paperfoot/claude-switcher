@@ -254,7 +254,7 @@ test('a target cookie set failure restores A and reports switch failure', async 
   assert.deepEqual(await rig.switcher.switchTo(EMAIL.B), {
     ok: false,
     error: 'web_switch_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'restore_cookies', cookieName: 'sessionKey',
   });
   assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
   assert.equal(rig.events.filter(event => event === 'browser:clear').length, 2);
@@ -267,11 +267,22 @@ test('a restored identity mismatch restores A and reports switch failure', async
   assert.deepEqual(await rig.switcher.switchTo(EMAIL.B), {
     ok: false,
     error: 'web_switch_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'verify_identity',
   });
   assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
   assert.ok(rig.events.includes(`probe:${EMAIL.C}`));
   assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
+});
+
+test('cookie failure diagnostics include the cookie name but never its value or exception', async () => {
+  const privateValue='private-cookie-value';
+  const rig=makeRig({entries:[savedSession('A'),savedSession('B',{cookies:[sessionCookie(privateValue)]})],
+    onSet(details){if(details.value===privateValue)throw new Error('private exception '+privateValue);return true;}});
+  const result=await rig.switcher.switchTo(EMAIL.B);
+  assert.deepEqual(result,{ok:false,error:'web_switch_failed',email:EMAIL.B,
+    failureStep:'restore_cookies',cookieName:'sessionKey'});
+  assert.equal(JSON.stringify(result).includes(privateValue),false);
+  assert.equal(await rig.probe(),EMAIL.A);
 });
 
 test('a thrown code switch failure restores A and reports code_switch_failed', async () => {
@@ -283,7 +294,7 @@ test('a thrown code switch failure restores A and reports code_switch_failed', a
   }), {
     ok: false,
     error: 'code_switch_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'activate_code',
   });
 
   assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
@@ -305,7 +316,7 @@ test('rollback ignores an expired auxiliary cookie while restoring the previous 
   assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, async () => ({ok: false})), {
     ok: false,
     error: 'code_switch_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'activate_code',
   });
 
   assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
@@ -324,7 +335,7 @@ test('an explicit code switch failure restores a signed-out browser state', asyn
   }), {
     ok: false,
     error: 'code_switch_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'activate_code',
   });
 
   assert.deepEqual(rig.jar(), signedOutCookies);
@@ -345,7 +356,7 @@ test('a code switch failure reports web_restore_failed when browser rollback fai
   }), {
     ok: false,
     error: 'web_restore_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'activate_code',
   });
 
   assert.equal(rig.events.includes(`code:switch:${EMAIL.B}`), true);
@@ -377,7 +388,7 @@ test('a rollback failure is reported explicitly as web_restore_failed', async ()
   assert.deepEqual(await rig.switcher.switchTo(EMAIL.B), {
     ok: false,
     error: 'web_restore_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'restore_cookies', cookieName: 'sessionKey',
   });
   assert.equal(rig.events.filter(event => event === 'browser:clear').length, 2);
   assert.equal(rig.events.includes('browser:set:B'), true);
@@ -506,7 +517,7 @@ test('a deadline reached during cookie replacement rolls back before reporting f
     return true;
   }});
   assert.deepEqual(await rig.switcher.switchTo(EMAIL.B, null, 10), {
-    ok: false, error: 'web_switch_failed', email: EMAIL.B,
+    ok: false, error: 'web_switch_failed', email: EMAIL.B, failureStep: 'verify_identity',
   });
   assert.equal(await rig.probe(), EMAIL.A);
   assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);

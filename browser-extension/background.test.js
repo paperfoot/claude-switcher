@@ -346,7 +346,7 @@ test('a failed popup selection rolls back identity without replacing live browse
   assert.deepEqual(clone(await popup), {
     ok: false,
     error: 'code_switch_failed',
-    email: EMAIL.B,
+    email: EMAIL.B, failureStep: 'activate_code',
   });
   assert.equal(harness.currentEmail(), EMAIL.A);
   assert.deepEqual(browserCookieValues(harness.jar()), browserCookieValues(liveBrowserCookies));
