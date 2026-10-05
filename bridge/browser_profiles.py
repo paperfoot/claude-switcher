@@ -33,7 +33,7 @@ def _connections(base, exclude=None, sender=None):
 
 def _summary(rows):
     profiles = [dict(connection=path.name, **{key: state[key] for key in
-                ('ok', 'email', 'error', 'version') if key in state}) for path, state in rows]
+                ('ok', 'email', 'error', 'version', 'lastHealthCheckAt', 'lastSessionSavedAt') if key in state}) for path, state in rows]
     emails = {state.get('email') for _, state in rows}
     ok = bool(rows) and all(state.get('ok') for _, state in rows)
     result = {'ok': ok, 'email': next(iter(emails)) if ok and len(emails) == 1 else None,
@@ -84,5 +84,6 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None):
             restored &= bool(rollback.get('ok') and rollback.get('email') == old['email'])
         return {**_summary([(p, _request(p, 'status', sender=sender)) for p, _ in rows]),
                 'ok': False, 'error': result.get('error', 'web_identity_mismatch') if restored else 'web_restore_failed',
-                'rolledBack': restored}
+                'rolledBack': restored, 'failedConnection': path.name,
+                **{key: result[key] for key in ('failureStep', 'cookieName') if key in result}}
     return _summary(final)
