@@ -267,7 +267,7 @@ test('a restored identity mismatch restores A and reports switch failure', async
   assert.deepEqual(await rig.switcher.switchTo(EMAIL.B), {
     ok: false,
     error: 'web_switch_failed',
-    email: EMAIL.B, failureStep: 'verify_identity',
+    email: EMAIL.B, failureStep: 'verify_identity', probeStatus: 'identity_mismatch',
   });
   assert.equal(rig.jar().find(cookie => cookie.name === 'sessionKey')?.value, 'A');
   assert.ok(rig.events.includes(`probe:${EMAIL.C}`));
@@ -521,4 +521,24 @@ test('a deadline reached during cookie replacement rolls back before reporting f
   });
   assert.equal(await rig.probe(), EMAIL.A);
   assert.equal(rig.events.some(event => event.startsWith('browser:refresh:')), false);
+});
+
+test('a successful local browser and Code switch survives another profile failure', async () => {
+  for (const target of [EMAIL.A, EMAIL.B]) {
+    const rig = makeRig();
+    const partial = {ok:false,partial:true,error:'code_only_after_web_failure',codeEmail:target,browserReady:false};
+    const result = await rig.switcher.switchTo(target, async () => partial);
+    assert.deepEqual(result, {...partial,email:target});
+    assert.equal(await rig.probe(),target);
+  }
+});
+
+test('an unauthorized target is reported as expired and preserves the failed probe through rollback', async () => {
+  const rig = makeRig({identityForKey:{A:EMAIL.A}});
+  rig.probe.diagnostic={probeStatus:'unauthorized',httpStatus:401};
+  const result = await rig.switcher.switchTo(EMAIL.B);
+  assert.equal(result.error,'web_login_expired');
+  assert.equal(result.failureStep,'verify_identity');
+  assert.equal(result.httpStatus,401);
+  assert.equal(await rig.probe(),EMAIL.A);
 });

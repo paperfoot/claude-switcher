@@ -3,13 +3,18 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
-async function harness() {
+async function harness({renewDuringSave=false}={}) {
   let now=1_000_000, nextTimer=0, nextRequest=0;
   let blockPing=false, blockSwitch=false, releaseSwitch;
   const timers=new Map(), ports=[], requests=[], alarms=[], cookieListeners=[];
   const actions=[];
   class Switcher {
-    async save(){actions.push('save');return {ok:true,email:'a@example.com'};}
+    async save(){
+      actions.push('save');
+      await Promise.resolve();
+      if(renewDuringSave)for(const f of cookieListeners)f({removed:false,cookie:{name:'sessionKeyV3'}});
+      return {ok:true,email:'a@example.com'};
+    }
     async status(){return {ok:true,email:'a@example.com',accounts:['a@example.com']};}
     async switchTo(email, activate){
       actions.push('switch');
@@ -108,5 +113,15 @@ test('late messages and disconnects from a replaced host leave its replacement i
 
 test('renewed alternate session cookies are saved',async()=>{
   const h=await harness();await h.cookie('sessionKeyV3');await h.fireTimeout(1500);
+  assert.deepEqual(h.actions,['save','save']);
+});
+
+test('cookie updates during capture do not schedule another capture',async()=>{
+  const h=await harness({renewDuringSave:true});
+  await h.fireTimeout(1500);
+  assert.deepEqual(h.actions,['save']);
+  await h.cookie('sessionKeyV3');await h.fireTimeout(1500);
+  assert.deepEqual(h.actions,['save','save']);
+  await h.fireTimeout(1500);
   assert.deepEqual(h.actions,['save','save']);
 });

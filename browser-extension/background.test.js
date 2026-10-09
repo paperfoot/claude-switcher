@@ -116,6 +116,8 @@ async function makeHarness({
 
   function nativeResult(message) {
     switch (message.action) {
+      case 'diagnostic':
+        return {ok: true};
       case 'vault_get':
         return {ok: true, entry: clone(vault.get(message.email))};
       case 'vault_put':
