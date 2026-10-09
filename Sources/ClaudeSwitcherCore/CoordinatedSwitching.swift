@@ -63,6 +63,7 @@ public struct CoordinatedResult: Decodable, Sendable {
     public let browserReady: Bool?
     public let error: String?
     public let message: String?
+    public let browserError: String?
 
     public var summary: String {
         if ok { return browserReady == true ? "Chrome and Code switched" : "Code switched · Chrome needs setup" }
@@ -70,7 +71,12 @@ public struct CoordinatedResult: Decodable, Sendable {
         case "web_login_needed", "web_login_expired": return "Save this account in the Chrome companion first"
         case "web_switch_failed": return "Chrome could not switch · previous account restored"
         case "switch_in_progress": return "Another switch is finishing"
-        case "code_only_after_web_failure": return "Code switched · Chrome needs attention"
+        case "code_only_after_web_failure":
+            switch browserError {
+            case "web_login_needed", "web_login_expired": return "Code switched · sign in to Claude.ai once"
+            case "host_timeout", "host_disconnected", "host_unavailable", "web_unavailable": return "Code switched · Chrome is not responding"
+            default: return "Code switched · Chrome could not switch"
+            }
         case "code_restore_failed", "web_restore_failed": return "Account needs attention · check Chrome and Code"
         default: return "Could not switch accounts · try again"
         }
