@@ -3,10 +3,11 @@
 from pathlib import Path
 
 try:
-    from . import native_transport, profile_transport
+    from . import native_transport, profile_transport, event_log
 except ImportError:
     import native_transport
     import profile_transport
+    import event_log
 
 
 def _request(path, command, email=None, sender=None):
@@ -27,6 +28,8 @@ def _connections(base, exclude=None, sender=None):
         # A killed Chrome/native process can leave a socket behind.
         if state.get('error') == 'host_unavailable':
             continue
+        if state.get('ok') is False:
+            event_log.emit(base, 'browser_error', error=state.get('error', 'web_unavailable'), failureStep='connect')
         rows.append((path, state))
     return rows
 
@@ -69,6 +72,7 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None):
             continue
         attempted.append((path, before))
         result = _request(path, 'switch', email, sender)
+        event_log.emit(base, 'browser_profile_finished', **result)
         if result.get('ok') and result.get('email') == email:
             final.append((path, {**before, **result}))
             continue
@@ -85,5 +89,5 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None):
         return {**_summary([(p, _request(p, 'status', sender=sender)) for p, _ in rows]),
                 'ok': False, 'error': result.get('error', 'web_identity_mismatch') if restored else 'web_restore_failed',
                 'rolledBack': restored, 'failedConnection': path.name,
-                **{key: result[key] for key in ('failureStep', 'cookieName') if key in result}}
+                **{key: result[key] for key in ('failureStep', 'cookieName', 'probeStatus', 'httpStatus') if key in result}}
     return _summary(final)

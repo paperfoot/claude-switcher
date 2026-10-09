@@ -1358,10 +1358,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.accessoryView = scrollView
         alert.addButton(withTitle: "Copy")
         alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Open switch log")
 
-        if runModal(alert) == .alertFirstButtonReturn {
+        let response = runModal(alert)
+        if response == .alertFirstButtonReturn {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(report, forType: .string)
+        } else if response == .alertThirdButtonReturn {
+            let log = Config.configURL.deletingLastPathComponent().appendingPathComponent("events.jsonl")
+            if FileManager.default.fileExists(atPath: log.path) {
+                NSWorkspace.shared.open(log)
+            } else {
+                NSWorkspace.shared.open(log.deletingLastPathComponent())
+            }
         }
     }
 

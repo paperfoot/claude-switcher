@@ -7,6 +7,8 @@ let incomingCommands = 0;
 let healthCheckRunning = false;
 let lastHealthCheckAt = 0;
 let lastSessionSavedAt = 0;
+let sessionSaveInFlight = null;
+let probesInFlight = 0;
 const requests = new Map();
 function native(action, payload={}, timeoutMs=action==='select'?120000:30000) {
   if (!port) connect();
@@ -20,14 +22,28 @@ function native(action, payload={}, timeoutMs=action==='select'?120000:30000) {
   });
 }
 async function probe() {
+  probesInFlight++;
+  try {
+  let diagnostic = {probeStatus:'invalid_response'};
   for (const endpoint of ['/api/bootstrap','/api/auth/current_account']) {
     try {
       const response=await fetch('https://claude.ai'+endpoint,{credentials:'include',cache:'no-store',signal:AbortSignal.timeout(8000)});
-      if (!response.ok) continue;
-      const email=identityFrom(await response.json()); if(email) return email;
-    } catch {}
+      if (!response.ok) {
+        // Keep the bootstrap failure; a missing legacy endpoint is not a login failure.
+        if(response.status!==404) diagnostic={httpStatus:response.status,probeStatus:response.status===401?'unauthorized':response.status===403?'forbidden':response.status===429?'rate_limited':'server_error'};
+        continue;
+      }
+      const email=identityFrom(await response.json());
+      if(email) {probe.diagnostic={probeStatus:'verified',httpStatus:response.status}; return email;}
+    } catch { if(!diagnostic.httpStatus) diagnostic={probeStatus:'network_error'}; }
   }
+  probe.diagnostic=diagnostic;
+  report({error:'web_unavailable',failureStep:'verify_identity',...diagnostic});
   return null;
+  } finally {probesInFlight--;}
+}
+function report(details) {
+  if(port) void native('diagnostic',{details},5000).catch(()=>{});
 }
 const browser = {
   cookies:()=>chrome.cookies.getAll({domain:'claude.ai',storeId:'0'}),
@@ -63,9 +79,16 @@ const vault={
 };
 const switcher=new SessionSwitcher(browser,vault,probe);
 async function saveCurrentSession() {
-  const result=await switcher.save();
-  lastSessionSavedAt=Date.now();
-  return result;
+  if(sessionSaveInFlight)return sessionSaveInFlight;
+  sessionSaveInFlight=switcher.save();
+  try {
+    const result=await sessionSaveInFlight;
+    lastSessionSavedAt=Date.now();
+    return result;
+  } catch(error) {
+    report({error:'session_save_failed',failureStep:'save_session',...probe.diagnostic});
+    throw error;
+  } finally {sessionSaveInFlight=null;}
 }
 async function maintainConnection() {
   if(healthCheckRunning || popupSwitchInProgress || incomingCommands || requests.size)return;
@@ -99,7 +122,7 @@ function connect() {
       if(message.type==='response'){
         const pending=requests.get(message.id); if(!pending)return;
         requests.delete(message.id);clearTimeout(pending.timeout);
-        if(message.result?.ok===false) pending.reject(new Error(message.result.error||'Companion error'));
+        if(message.result?.ok===false && !message.result.partial) pending.reject(new Error(message.result.error||'Companion error'));
         else pending.resolve(message.result);
       } else if(message.type==='command'){
         incomingCommands++;
@@ -111,6 +134,8 @@ function connect() {
         }
         catch { result={ok:false,error:'web_unavailable'}; }
         finally {incomingCommands--;}
+        if(result.ok===false)report(result);
+        if(message.command==='switch' && result.ok)void saveCurrentSession().catch(()=>{});
         if(port===p)p.postMessage({type:'result',id:message.id,result});
       }
     });
@@ -133,7 +158,12 @@ chrome.runtime.onMessage.addListener((msg,sender,send)=>{
   const selectBoth=async()=>{
     if(popupSwitchInProgress)return {ok:false,error:'switch_in_progress'};
     popupSwitchInProgress=true;
-    try{return await switcher.switchTo(msg.email,email=>native('select',{email}));}
+    try{
+      const result=await switcher.switchTo(msg.email,email=>native('select',{email}));
+      if(result.ok===false)report(result);
+      if(result.ok || result.partial)void saveCurrentSession().catch(()=>{});
+      return result;
+    }
     finally{popupSwitchInProgress=false;}
   };
   const work=action==='save'?saveCurrentSession():action==='newLogin'?switcher.newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(new Error('Unknown action'));
@@ -142,6 +172,8 @@ chrome.runtime.onMessage.addListener((msg,sender,send)=>{
 let saveTimer;
 chrome.cookies.onChanged.addListener(change=>{
   if(change.removed || !['sessionKey','sessionKeyLC','sessionKeyV3','sessionKeyV3LC'].includes(change.cookie.name) || !claudeCookie(change.cookie))return;
+  // Bootstrap can renew cookies itself. Do not turn verification into another save loop.
+  if(sessionSaveInFlight || probesInFlight || incomingCommands || popupSwitchInProgress)return;
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{void saveCurrentSession().catch(()=>{});},1500);
 });

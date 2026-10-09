@@ -262,7 +262,7 @@ class CompanionTests(unittest.TestCase):
         self.browser_request.assert_called_once_with("switch", TARGET_EMAIL)
         self.assert_saved(result)
 
-    def test_browser_transport_exceptions_restore_previous_code_account(self):
+    def test_browser_transport_exceptions_keep_selected_code_account(self):
         for error in (
             TimeoutError("browser request timed out"),
             OSError("browser transport failed"),
@@ -279,18 +279,19 @@ class CompanionTests(unittest.TestCase):
                     result,
                     {
                         "ok": False,
-                        "error": "web_unavailable",
-                        "codeEmail": OLD_EMAIL,
+                        "partial": True,
+                        "error": "code_only_after_web_failure",
+                        "browserError": "web_unavailable",
+                        "codeEmail": TARGET_EMAIL,
+                        "webEmail": None,
+                        "browserReady": False,
                     },
                 )
-                self.assertEqual(
-                    self.switch_code.call_args_list,
-                    [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
-                )
+                self.switch_code.assert_called_once_with(TARGET_EMAIL)
                 self.browser_request.assert_called_once_with("switch", TARGET_EMAIL)
                 self.assert_saved(result)
 
-    def test_explicit_transport_errors_restore_previous_code_account(self):
+    def test_explicit_transport_errors_keep_selected_code_account(self):
         for error in (
             "host_disconnected",
             "host_timeout",
@@ -308,12 +309,17 @@ class CompanionTests(unittest.TestCase):
 
                 self.assertEqual(
                     result,
-                    {"ok": False, "error": error, "codeEmail": OLD_EMAIL},
+                    {
+                        "ok": False,
+                        "partial": True,
+                        "error": "code_only_after_web_failure",
+                        "browserError": error,
+                        "codeEmail": TARGET_EMAIL,
+                        "webEmail": None,
+                        "browserReady": False,
+                    },
                 )
-                self.assertEqual(
-                    self.switch_code.call_args_list,
-                    [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
-                )
+                self.switch_code.assert_called_once_with(TARGET_EMAIL)
                 self.browser_request.assert_called_once_with("switch", TARGET_EMAIL)
                 self.assert_saved(result)
 
@@ -328,7 +334,7 @@ class CompanionTests(unittest.TestCase):
         self.browser_request.assert_not_called()
         self.assert_saved(result)
 
-    def test_web_failure_restores_previous_code_account(self):
+    def test_web_failure_keeps_selected_code_account(self):
         self.browser_request.return_value = {
             "ok": False,
             "error": "web_login_expired",
@@ -340,14 +346,15 @@ class CompanionTests(unittest.TestCase):
             result,
             {
                 "ok": False,
-                "error": "web_login_expired",
-                "codeEmail": OLD_EMAIL,
+                "partial": True,
+                "error": "code_only_after_web_failure",
+                "browserError": "web_login_expired",
+                "codeEmail": TARGET_EMAIL,
+                "webEmail": None,
+                "browserReady": False,
             },
         )
-        self.assertEqual(
-            self.switch_code.call_args_list,
-            [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
-        )
+        self.switch_code.assert_called_once_with(TARGET_EMAIL)
         self.assert_saved(result)
 
     def test_web_failure_without_previous_code_account_reports_actual_code_state(self):
@@ -363,15 +370,18 @@ class CompanionTests(unittest.TestCase):
             result,
             {
                 "ok": False,
+                "partial": True,
                 "error": "code_only_after_web_failure",
+                "browserError": "web_login_expired",
                 "codeEmail": TARGET_EMAIL,
+                "webEmail": None,
                 "browserReady": False,
             },
         )
         self.switch_code.assert_called_once_with(TARGET_EMAIL)
         self.assert_saved(result)
 
-    def test_browser_success_with_wrong_identity_restores_previous_code_account(self):
+    def test_browser_success_with_wrong_identity_keeps_selected_code_account(self):
         self.browser_request.return_value = {
             "ok": True,
             "email": "wrong@example.com",
@@ -383,14 +393,15 @@ class CompanionTests(unittest.TestCase):
             result,
             {
                 "ok": False,
-                "error": "web_identity_mismatch",
-                "codeEmail": OLD_EMAIL,
+                "partial": True,
+                "error": "code_only_after_web_failure",
+                "browserError": "web_identity_mismatch",
+                "codeEmail": TARGET_EMAIL,
+                "webEmail": None,
+                "browserReady": False,
             },
         )
-        self.assertEqual(
-            self.switch_code.call_args_list,
-            [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
-        )
+        self.switch_code.assert_called_once_with(TARGET_EMAIL)
         self.assert_saved(result)
 
     def test_code_failure_never_attempts_chrome(self):
@@ -404,12 +415,24 @@ class CompanionTests(unittest.TestCase):
         self.browser_request.assert_not_called()
         self.assertFalse(self.state.exists())
 
-    def test_failed_rollback_is_reported_explicitly(self):
-        self.browser_request.return_value = {
-            "ok": False,
-            "error": "web_switch_failed",
-        }
-        self.switch_code.side_effect = [None, RuntimeError("restore failed")]
+    def test_code_failure_restores_previous_code_account(self):
+        self.switch_code.side_effect = [RuntimeError("code switch failed"), None]
+
+        result = companion.select_account(TARGET_EMAIL)
+
+        self.assertEqual(result, {"ok": False, "error": "code_switch_failed"})
+        self.assertEqual(
+            self.switch_code.call_args_list,
+            [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
+        )
+        self.browser_request.assert_not_called()
+        self.assertFalse(self.state.exists())
+
+    def test_failed_code_restore_is_reported_explicitly(self):
+        self.switch_code.side_effect = [
+            RuntimeError("code switch failed"),
+            RuntimeError("restore failed"),
+        ]
 
         result = companion.select_account(TARGET_EMAIL)
 
@@ -418,7 +441,31 @@ class CompanionTests(unittest.TestCase):
             self.switch_code.call_args_list,
             [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
         )
+        self.browser_request.assert_not_called()
         self.assertFalse(self.state.exists())
+
+    def test_browser_failure_never_attempts_code_rollback(self):
+        self.browser_request.return_value = {
+            "ok": False,
+            "error": "web_switch_failed",
+        }
+
+        result = companion.select_account(TARGET_EMAIL)
+
+        self.assertEqual(
+            result,
+            {
+                "ok": False,
+                "partial": True,
+                "error": "code_only_after_web_failure",
+                "browserError": "web_switch_failed",
+                "codeEmail": TARGET_EMAIL,
+                "webEmail": None,
+                "browserReady": False,
+            },
+        )
+        self.switch_code.assert_called_once_with(TARGET_EMAIL)
+        self.assert_saved(result)
 
     def test_lock_contention_fails_before_switching(self):
         self.base.mkdir(parents=True)
@@ -649,15 +696,97 @@ class CompanionTests(unittest.TestCase):
         self.browser_request.return_value = {
             'ok': False, 'error': 'web_switch_failed', 'failureStep': 'restore_cookies',
             'cookieName': 'sessionKey', 'failedConnection': '12.sock', 'rolledBack': True,
+            'probeStatus': 'unauthorized', 'httpStatus': 401,
             'cookieValue': 'must-not-appear', 'rawException': 'must-not-appear',
         }
         result = companion.select_account(TARGET_EMAIL)
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['partial'])
+        self.assertEqual(result['error'], 'code_only_after_web_failure')
+        self.assertEqual(result['browserError'], 'web_switch_failed')
+        self.assertEqual(result['codeEmail'], TARGET_EMAIL)
+        self.assertIsNone(result['webEmail'])
+        self.assertFalse(result['browserReady'])
         self.assertEqual(result['failureStep'], 'restore_cookies')
         self.assertEqual(result['cookieName'], 'sessionKey')
         self.assertEqual(result['failedConnection'], '12.sock')
         self.assertTrue(result['rolledBack'])
+        self.assertEqual(result['probeStatus'], 'unauthorized')
+        self.assertEqual(result['httpStatus'], 401)
         self.assertNotIn('must-not-appear', json.dumps(result))
+        self.switch_code.assert_called_once_with(TARGET_EMAIL)
         self.assert_saved(result)
+
+    def test_partial_switch_log_has_failure_metadata_without_addresses(self):
+        self.browser_request.return_value = {
+            'ok': False,
+            'error': 'web_login_expired',
+            'failureStep': 'verify_identity',
+            'probeStatus': 'unauthorized',
+            'httpStatus': 401,
+        }
+
+        companion.select_account(TARGET_EMAIL)
+
+        events = companion.event_log.recent(self.base)
+        self.assertEqual([event['event'] for event in events],
+                         ['switch_started', 'switch_finished'])
+        self.assertEqual(events[0]['scope'], 'claude')
+        self.assertEqual(events[1]['scope'], 'claude')
+        self.assertFalse(events[1]['ok'])
+        self.assertTrue(events[1]['partial'])
+        self.assertEqual(events[1]['error'], 'code_only_after_web_failure')
+        self.assertEqual(events[1]['browserError'], 'web_login_expired')
+        self.assertEqual(events[1]['failureStep'], 'verify_identity')
+        self.assertEqual(events[1]['probeStatus'], 'unauthorized')
+        self.assertEqual(events[1]['httpStatus'], 401)
+        self.assertFalse(events[1]['browserReady'])
+        log_text = (self.base / 'events.jsonl').read_text()
+        self.assertNotIn(OLD_EMAIL, log_text)
+        self.assertNotIn(TARGET_EMAIL, log_text)
+        self.assertNotIn('@', log_text)
+
+    def test_browser_only_failure_is_logged_without_target_address(self):
+        self.browser_request.return_value = {'ok': False, 'error': 'host_timeout'}
+
+        result = companion.select_browser(TARGET_EMAIL, expected_profiles=2)
+
+        self.assertEqual(result, {'ok': False, 'error': 'host_timeout'})
+        events = companion.event_log.recent(self.base)
+        self.assertEqual([event['event'] for event in events],
+                         ['switch_started', 'switch_finished'])
+        self.assertEqual(events[0]['scope'], 'chrome')
+        self.assertEqual(events[1]['scope'], 'chrome')
+        self.assertFalse(events[1]['ok'])
+        self.assertEqual(events[1]['error'], 'host_timeout')
+        self.assertNotIn(TARGET_EMAIL, (self.base / 'events.jsonl').read_text())
+
+    def test_native_diagnostic_log_sanitizes_untrusted_fields(self):
+        result = self.handle_native(
+            {
+                'action': 'diagnostic',
+                'details': {
+                    'event': 'native_error',
+                    'error': 'web_login_expired',
+                    'failureStep': 'verify_identity',
+                    'httpStatus': 401,
+                    'email': TARGET_EMAIL,
+                    'cookieValue': 'must-not-appear',
+                },
+            }
+        )
+
+        self.assertEqual(result, {'ok': True})
+        events = companion.event_log.recent(self.base)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event['event'], 'browser_error')
+        self.assertEqual(event['error'], 'web_login_expired')
+        self.assertEqual(event['failureStep'], 'verify_identity')
+        self.assertEqual(event['httpStatus'], 401)
+        log_text = (self.base / 'events.jsonl').read_text()
+        self.assertNotIn(TARGET_EMAIL, log_text)
+        self.assertNotIn('must-not-appear', log_text)
 
     def test_browser_only_refuses_during_another_account_switch(self):
         self.base.mkdir()
@@ -686,7 +815,7 @@ class CompanionTests(unittest.TestCase):
         self.switch_code.assert_not_called()
         self.browser_request.assert_not_called()
         self.run_backend.assert_not_called()
-        self.assertFalse(self.base.exists())
+        self.assertFalse(self.state.exists())
 
 
 if __name__ == "__main__":

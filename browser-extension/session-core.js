@@ -84,7 +84,9 @@ export class SessionSwitcher {
       if (expired()) return {ok:false,error:'browser_timeout',email};
       if (oldIdentity === email) {
         try {
-          if (activateCode && (await activateCode(email))?.ok === false) throw new Error('Code activation failed');
+          const activation = activateCode ? await activateCode(email) : null;
+          if (activation?.partial && activation.codeEmail === email) return {...activation, email};
+          if (activation?.ok === false) throw new Error('Code activation failed');
         } catch { return {ok:false,error:'code_switch_failed',email}; }
         return {ok:true,email};
       }
@@ -92,6 +94,8 @@ export class SessionSwitcher {
     let failure = 'web_switch_failed';
     let failureStep = 'clear_cookies';
     let cookieName;
+    let verification;
+    let activation;
     try {
       if (expired()) return {ok:false,error:'browser_timeout',email};
       await this.browser.clear();
@@ -106,14 +110,21 @@ export class SessionSwitcher {
       }
       failureStep = 'verify_identity';
       cookieName = undefined;
-      if (await this.probe() !== email) throw new Error('Restored account could not be verified');
+      const identity = await this.probe();
+      if (identity !== email) {
+        verification = {...this.probe.diagnostic};
+        if (identity) verification.probeStatus = 'identity_mismatch';
+        if (verification.probeStatus === 'unauthorized') failure = 'web_login_expired';
+        throw new Error('Restored account could not be verified');
+      }
       if (expired()) throw new Error('Switch timed out');
       // Keep the browser transaction locked until Code has committed or rolled back.
       // A menu selection must not interleave with a popup selection halfway through.
       if (activateCode) {
         failureStep = 'activate_code';
         failure = 'code_switch_failed';
-        if ((await activateCode(email))?.ok === false) throw new Error('Code activation failed');
+        activation = await activateCode(email);
+        if (activation?.ok === false && !(activation.partial && activation.codeEmail === email)) throw new Error('Code activation failed');
       }
     } catch {
       // Preserve the previous session if ANY restore or identity check failed.
@@ -124,10 +135,11 @@ export class SessionSwitcher {
           if (!await this.browser.set(cookieDetails(cookie))) throw new Error('restore failed');
         }
         if (await this.probe() !== oldIdentity) throw new Error('identity mismatch');
-      } catch { return {ok:false,error:'web_restore_failed',email,failureStep,...(cookieName?{cookieName}:{})}; }
-      return {ok:false,error:failure,email,failureStep,...(cookieName?{cookieName}:{})};
+      } catch { return {ok:false,error:'web_restore_failed',email,failureStep,...verification,...(cookieName?{cookieName}:{})}; }
+      return {ok:false,error:failure,email,failureStep,...verification,...(cookieName?{cookieName}:{})};
     }
     await this.browser.refresh(target.url);
+    if (activation?.partial) return {...activation, email};
     return {ok:true,email};
   }); }
 }

@@ -81,7 +81,7 @@ Pin the companion if you want to switch from Chrome too. **Settings → Connect 
 
 After updating the app and rerunning the setup script, open `chrome://extensions` and click **Reload** on **Claude Switcher Companion**. Chrome can retain an unpacked extension's old code even after a browser restart. Your saved accounts stay in Keychain.
 
-If Chrome is closed, selection switches Code immediately. When the companion reconnects, it restores the pending selection from the saved browser login. If that login has expired, sign in again through **Add another account**. The app only reports **Chrome and Code switched** after both sides verify the selected email. If the companion rejects a selection, the coordinator tries to restore the previous Code account and reports the failure.
+If Chrome is closed, selection switches Code immediately. When the companion reconnects, it restores the pending selection from the saved browser login. If that login has expired, sign in again through **Add another account**. The app only reports **Chrome and Code switched** after both sides verify the selected email. If Chrome fails, the verified Code selection stays active. The menu reports the Chrome failure separately; it never switches Code back because of a browser problem.
 
 ## Usage at a glance
 
@@ -106,6 +106,7 @@ Install the command with `install -m 755 scripts/claude-accounts ~/.local/bin/cl
 ```sh
 claude-accounts accounts
 claude-accounts chrome-status
+claude-accounts logs
 claude-accounts chrome person@example.com --expect-profiles 2
 claude-accounts claude person@example.com
 ```
@@ -138,6 +139,8 @@ APP="/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher"
 ```
 
 Diagnostics contain account emails and usage, not tokens or cookies. Redact personal details before posting an issue. An `ok: true` result with `browserReady: false` means Code switched and Chrome still needs setup.
+
+**Settings → Diagnostics → Open switch log** opens the local event history. `claude-accounts logs` returns the latest 50 events. Logs record switch results, duration, failure stage, HTTP status when available, and whether Chrome recovered. They exclude account names, cookie values, tokens, URLs, and raw exceptions, and rotate at 256 KiB with one backup.
 
 If Chrome switching fails, reload **Claude Switcher Companion** at `chrome://extensions` in each connected profile and retry once. Failed switches report the connection and restore step; cookie-write failures include the cookie name, never its value. A failed restore does not necessarily mean the login expired.
 
