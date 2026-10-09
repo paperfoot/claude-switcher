@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local coordinator. No web cookies or tokens are written to logs or JSON files."""
 import fcntl
+import functools
 import json
 import math
 import os
@@ -9,6 +10,10 @@ import subprocess
 import sys
 import tempfile
 import time
+try:
+    from . import event_log
+except ImportError:
+    import event_log
 
 BASE = Path.home() / '.config' / 'claude-switcher'
 SOCKET = BASE / 'browser.sock'
@@ -17,6 +22,25 @@ SELECTORS = ('CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'CLAUDE_COD
              'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
              'ANTHROPIC_BASE_URL', 'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_USE_BEDROCK',
              'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY')
+
+
+def logged_switch(scope):
+    def decorate(function):
+        @functools.wraps(function)
+        def run(*args, **kwargs):
+            started = time.monotonic()
+            event_log.emit(BASE, 'switch_started', scope=scope)
+            try:
+                result = function(*args, **kwargs)
+            except Exception:
+                event_log.emit(BASE, 'switch_finished', scope=scope, ok=False, error='backend_unavailable',
+                               durationMs=int((time.monotonic() - started) * 1000))
+                raise
+            event_log.emit(BASE, 'switch_finished', scope=scope,
+                           durationMs=int((time.monotonic() - started) * 1000), **result)
+            return result
+        return run
+    return decorate
 
 
 def clean_environment():
@@ -120,6 +144,7 @@ def browser_state():
         return {'ok': False, 'error': 'browser_missing', 'accounts': []}
 
 
+@logged_switch('chrome')
 def select_browser(email, expected_profiles=1):
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -130,6 +155,7 @@ def select_browser(email, expected_profiles=1):
         return browser_request('switch', email, expected_profiles=expected_profiles)
 
 
+@logged_switch('claude')
 def select_account(email, include_browser=True, verified_browser=False):
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -156,16 +182,12 @@ def select_account(email, include_browser=True, verified_browser=False):
                 web = {'ok': False, 'error': 'web_unavailable'}
             if web.get('ok') and web.get('email') != email:
                 web = {'ok': False, 'error': 'web_identity_mismatch'}
-            # An installed companion rejecting a target must not leave Code on a different account.
+            # A browser failure must not undo a verified Code login used by new processes.
             if not web.get('ok') and web.get('error') != 'browser_missing':
-                if old and old != email:
-                    try: switch_code(old)
-                    except Exception: return {'ok': False, 'error': 'code_restore_failed'}
-                result = {'ok': False, 'error': web.get('error', 'web_unavailable'), 'codeEmail': old}
-                result.update({key: web[key] for key in ('failureStep', 'cookieName', 'failedConnection', 'rolledBack') if key in web})
-                if old is None:
-                    # There was no signed-in Code account to restore. Report the actual state.
-                    result.update(error='code_only_after_web_failure', codeEmail=email, browserReady=False)
+                result = {'ok': False, 'partial': True, 'error': 'code_only_after_web_failure',
+                          'browserError': web.get('error', 'web_unavailable'),
+                          'codeEmail': email, 'webEmail': web.get('email'), 'browserReady': False}
+                result.update({key: web[key] for key in ('failureStep', 'cookieName', 'failedConnection', 'rolledBack', 'probeStatus', 'httpStatus') if key in web})
                 atomic_json(STATE, result)
                 return result
         result = {'ok': True, 'codeEmail': email, 'webEmail': web.get('email') if web.get('ok') else None,
@@ -187,6 +209,11 @@ def snapshot():
 
 def handle_native(message):
     if message.get('action') == 'ping':
+        return {'ok': True}
+    if message.get('action') == 'diagnostic':
+        details = message.get('details')
+        if isinstance(details, dict):
+            event_log.emit(BASE, 'browser_error', **{k: v for k, v in details.items() if k not in ('event', 'base')})
         return {'ok': True}
     from claude_swap import macos_keychain
     service = 'Paperfoot Claude Switcher Web'
@@ -238,6 +265,7 @@ def handle_native(message):
             return select_account(message.get('email'), verified_browser=True)
         return {'ok': False, 'error': 'unknown_action'}
     except Exception:
+        event_log.emit(BASE, 'native_error', error='keychain_error' if action in ('vault_get', 'vault_put') else 'backend_unavailable')
         return {'ok': False, 'error': 'Account could not be saved or opened. Unlock your Keychain and try again.'}
 
 
@@ -252,7 +280,9 @@ def main():
         ident = (Path(__file__).parent / 'extension_id.txt').read_text().strip()
         raise SystemExit(run_host(origin, 'chrome-extension://' + ident + '/', str(SOCKET), handle_native))
     try:
-        if command == 'browser-status':
+        if command == 'logs':
+            result = {'ok': True, 'path': str(BASE / 'events.jsonl'), 'events': event_log.recent(BASE)}
+        elif command == 'browser-status':
             result = browser_state()
         elif command == 'browser-switch':
             import argparse
@@ -265,6 +295,7 @@ def main():
         else:
             result = snapshot() if command == 'snapshot' else select_account(sys.argv[2]) if command == 'switch' else {'ok': False, 'error': 'unknown_action'}
     except Exception:
+        event_log.emit(BASE, 'native_error', error='backend_unavailable')
         result = {'ok': False, 'error': 'Backend unavailable. Open Settings → Set up switching.'}
     print(json.dumps(result))
     if result.get('ok') is False: sys.exit(1)
