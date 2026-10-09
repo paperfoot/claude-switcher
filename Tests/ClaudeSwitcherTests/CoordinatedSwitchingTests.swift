@@ -21,4 +21,10 @@ struct CoordinatedSwitchingTests {
         let result = try JSONDecoder().decode(CoordinatedResult.self, from: data)
         #expect(result.summary == "Code switched · Chrome needs setup")
     }
+    @Test func browserFailureKeepsTheCodeSelectionVisible() throws {
+        let data = Data(#"{"ok":false,"partial":true,"codeEmail":"one@example.com","browserReady":false,"error":"code_only_after_web_failure","browserError":"host_timeout"}"#.utf8)
+        let result = try JSONDecoder().decode(CoordinatedResult.self, from: data)
+        #expect(result.codeEmail == "one@example.com")
+        #expect(result.summary == "Code switched · Chrome is not responding")
+    }
 }
