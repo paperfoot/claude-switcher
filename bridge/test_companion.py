@@ -820,3 +820,25 @@ class CompanionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CodeCacheCoordinatorTests(unittest.TestCase):
+    def test_already_active_account_still_refreshes_existing_code_cache(self):
+        with (
+            mock.patch.object(companion, 'validate_email'),
+            mock.patch.object(companion, 'run_backend', return_value={'reason': 'already-active'}) as backend,
+            mock.patch.object(companion, 'code_identity', return_value=TARGET_EMAIL),
+            mock.patch.object(companion, 'refresh_code_cache', return_value={'ok': True, 'cacheUpdated': True}) as refresh,
+        ):
+            companion.switch_code(TARGET_EMAIL)
+        backend.assert_called_once_with('switch', TARGET_EMAIL, '--json')
+        refresh.assert_called_once_with(TARGET_EMAIL)
+
+    def test_cache_repair_failure_does_not_undo_verified_code_login(self):
+        with (
+            mock.patch.object(companion, 'validate_email'),
+            mock.patch.object(companion, 'run_backend') as backend,
+            mock.patch.object(companion, 'code_identity', return_value=TARGET_EMAIL),
+            mock.patch.object(companion, 'refresh_code_cache', return_value={'ok': False, 'error': 'code_cache_sync_failed'}),
+        ):
+            companion.switch_code(TARGET_EMAIL)
+        backend.assert_called_once_with('switch', TARGET_EMAIL, '--json')
