@@ -13,9 +13,9 @@ A small native macOS menu bar app with separate Claude and Codex sections. Claud
 
 1. Choose an email in the menu bar.
 2. Claude.ai uses that account in each connected Chrome profile.
-3. In your existing Ghostty, iTerm2, or other terminal, stop Code when ready and run `claude --resume` or `claude --continue`.
+3. Continue in your existing Ghostty, iTerm2, or other terminal. Claude Code normally picks up the login on its next request; its macOS Keychain cache can delay this by about 30 seconds.
 
-Switching does not open a terminal. Your working directory, normal `~/.claude` history, and setup stay in place. Already-running Code sessions are not stopped; restarting them is the reliable way to use the selected account immediately. Claude's own credential cache can delay changes inside a running process.
+Your working directory, normal `~/.claude` history, and setup stay in place. When an existing `.credentials.json` has fallen behind Keychain after a manual login, the switcher verifies the current credential and refreshes that file under Claude's credential locks. It never creates a plaintext credential file just to trigger a refresh. If a running process still retains its old login, stop it when ready and run `claude --resume` or `claude --continue`.
 
 The menu-bar icon spins during a switch. A green check appears for three seconds after success. A red warning stays visible after failure; amber means Code switched but Chrome still needs attention. The selected account updates as soon as the switch is verified.
 
@@ -107,11 +107,14 @@ Install the command with `install -m 755 scripts/claude-accounts ~/.local/bin/cl
 claude-accounts accounts
 claude-accounts chrome-status
 claude-accounts logs
+claude-accounts refresh-code
 claude-accounts chrome person@example.com --expect-profiles 2
 claude-accounts claude person@example.com
 ```
 
 `chrome` changes Claude.ai in connected Chrome profiles without changing Claude Code. `--expect-profiles 2` refuses to proceed if fewer than two profiles are connected. The result lists the verified email for each connection. `claude` changes both Chrome and Code. Neither command changes Codex.
+
+After saving a manually logged-in Code account with `cswap add`, run `claude-accounts refresh-code` to sync its existing credential cache. This keeps the currently selected account and never restarts terminal sessions.
 
 ## Claude Desktop Code history
 
