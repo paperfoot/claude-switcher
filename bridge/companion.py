@@ -116,6 +116,24 @@ def switch_code(email):
     run_backend('switch', email, '--json')
     if code_identity() != email:
         raise RuntimeError('code_identity_mismatch')
+    # cswap deliberately skips writes for an already-active account. A manual login
+    # can leave its existing file cache behind even though Keychain is current.
+    refresh_code_cache(email)
+
+
+def refresh_code_cache(email):
+    try:
+        try:
+            from . import code_cache
+        except ImportError:
+            import code_cache
+        changed = code_cache.synchronize(email)
+        if changed:
+            event_log.emit(BASE, 'code_cache_synced', ok=True)
+        return {'ok': True, 'cacheUpdated': changed}
+    except Exception:
+        event_log.emit(BASE, 'native_error', error='code_cache_sync_failed')
+        return {'ok': False, 'error': 'code_cache_sync_failed'}
 
 
 def browser_request(command, email=None, expected_profiles=1, exclude=None):
@@ -280,7 +298,10 @@ def main():
         ident = (Path(__file__).parent / 'extension_id.txt').read_text().strip()
         raise SystemExit(run_host(origin, 'chrome-extension://' + ident + '/', str(SOCKET), handle_native))
     try:
-        if command == 'logs':
+        if command == 'refresh-code':
+            email = validate_email(code_identity())
+            result = {**refresh_code_cache(email), 'codeEmail': email}
+        elif command == 'logs':
             result = {'ok': True, 'path': str(BASE / 'events.jsonl'), 'events': event_log.recent(BASE)}
         elif command == 'browser-status':
             result = browser_state()

@@ -7,13 +7,13 @@ from pathlib import Path
 import stat
 
 MAX_BYTES = 262144
-EVENTS = {'switch_started', 'switch_finished', 'browser_profile_finished', 'native_error', 'browser_error'}
+EVENTS = {'switch_started', 'switch_finished', 'browser_profile_finished', 'native_error', 'browser_error', 'code_cache_synced'}
 ERRORS = set('''unknown_error switch_in_progress web_login_needed web_login_expired
 web_switch_failed web_restore_failed web_identity_mismatch web_unavailable
 code_switch_failed code_restore_failed code_only_after_web_failure
 browser_missing browser_profiles_missing browser_timeout host_timeout host_unavailable
 host_disconnected invalid_browser_result invalid_host_response response_too_large
-backend_unavailable keychain_error invalid_data session_save_failed native_disconnected
+backend_unavailable keychain_error invalid_data session_save_failed native_disconnected code_cache_sync_failed
 native_timeout unauthorized forbidden network_error rate_limited server_error'''.split())
 STEPS = {'capture_session', 'clear_cookies', 'restore_cookies', 'verify_identity', 'activate_code', 'save_session', 'connect'}
 PROBES = {'verified', 'unauthorized', 'forbidden', 'network_error', 'rate_limited', 'server_error', 'invalid_response', 'identity_mismatch'}
