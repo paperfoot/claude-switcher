@@ -13,6 +13,7 @@ def main():
     commands.add_parser('accounts', help='List saved Claude Code accounts and usage status')
     commands.add_parser('chrome-status', help='Show the verified account in each connected Chrome profile')
     commands.add_parser('logs', help='Read recent switch results and errors; excludes credentials and account names')
+    commands.add_parser('refresh-code', help='Refresh an existing Code credential cache after a manual login')
     chrome = commands.add_parser('chrome', help='Switch Claude.ai in connected Chrome profiles; leave Code unchanged')
     chrome.add_argument('email')
     chrome.add_argument('--expect-profiles', type=int, default=1,
@@ -41,6 +42,8 @@ def main():
         command = ['switch', args.email]
     elif args.command == 'logs':
         command = ['logs']
+    elif args.command == 'refresh-code':
+        command = ['refresh-code']
     else:
         command = ['browser-status']
     os.execv(python, [python, helper, *command])
