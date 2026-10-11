@@ -36,7 +36,7 @@ final class UsageBarView: NSView {
     private static let barWidth: CGFloat = 26
     private static let barHeight: CGFloat = 10
     private static let barGap: CGFloat = 6
-    private static let percentWidth: CGFloat = 44
+    private static let percentWidth: CGFloat = 48
     private static let trailingWidth: CGFloat = 69
     /// Text in every column shares one baseline, placed so the digits centre on the gauge.
     private static let baseline: CGFloat = 7
