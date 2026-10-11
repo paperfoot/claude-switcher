@@ -236,7 +236,7 @@ struct JevKeyStoreTests {
         let storage = MemoryKeyStorage()
         #expect(JevKeyStore.load(from: storage) == nil)
         try JevKeyStore.save("  ts-test-123\n", to: storage)
-        #expect(storage.keys == ["Claude Switcher TypeSafe/api-key"])
+        #expect(storage.keys == ["Claude Switcher Jev/api-key"])
         #expect(JevKeyStore.load(from: storage) == "ts-test-123")
         try JevKeyStore.remove(from: storage)
         #expect(JevKeyStore.load(from: storage) == nil)
