@@ -409,3 +409,19 @@ class BrowserProfilesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegacyHostTests(unittest.TestCase):
+    def test_a_host_from_before_an_update_is_asked_in_the_old_shape(self):
+        calls = []
+        def sender(path, command, email, **options):
+            calls.append(options)
+            if "deadline" in options:
+                return {"ok": False, "error": "invalid_request"}
+            return {"ok": True, "email": email}
+        deadline = browser_profiles.deadlines.Deadline(300)
+        result = browser_profiles._switch(Path("/tmp/1.sock"), "target@example.com", deadline, sender, 0)
+        self.assertEqual(result, {"ok": True, "email": "target@example.com"})
+        self.assertIn("deadline", calls[0])
+        self.assertNotIn("deadline", calls[1])
+        self.assertIn("timeout", calls[1])
