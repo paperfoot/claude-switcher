@@ -154,6 +154,10 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None, deadline
     final = []
     for path, before in rows:
         if before.get('email') == email:
+            if selected_at is not None:
+                # Already there, but it must still record this selection, or a later
+                # reconnect would re-apply an older one. A failure here changes nothing.
+                _switch(path, email, deadline, sender, 0, selected_at)
             final.append((path, before))
             continue
         index = pending.index(path)
