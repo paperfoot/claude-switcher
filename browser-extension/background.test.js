@@ -4,7 +4,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
-import {SessionSwitcher, SelectionMemory, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
+import {SessionSwitcher, SelectionMemory, failure, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
 
 const EMAIL = {
   A: 'a@example.com',
@@ -94,6 +94,7 @@ async function makeHarness({
   pendingSelectedAt = nowSeconds() - 60,
   pendingResults = null,
   selectResult = null,
+  nativeOverrides = {},
   storage = {selection: {appliedAt: 0, identity: null}},
   deferSelect = false,
 } = {}) {
@@ -130,6 +131,7 @@ async function makeHarness({
   }
 
   function nativeResult(message) {
+    if (message.action in nativeOverrides) return clone(nativeOverrides[message.action]);
     switch (message.action) {
       case 'diagnostic':
         return {ok: true};
@@ -246,6 +248,7 @@ async function makeHarness({
     SessionSwitcher,
     SelectionMemory,
     TextEncoder,
+    failure,
     URL,
     chrome,
     claudeCookie,
@@ -447,6 +450,27 @@ test('a selection deferred by a running switch is retried on the next alarm', as
   await harness.waitForNative('browser_ready');
   assert.equal(harness.requested('pending_selection').length, 2);
   assert.equal(harness.currentEmail(), EMAIL.B);
+});
+
+test('popup failures carry a code in error and readable text only in message', async () => {
+  const signedOut = await makeHarness({initialCookies: []});
+  await signedOut.waitForNative('pending_selection');
+  await signedOut.settle();
+  assert.deepEqual(clone(await signedOut.sendPopup({action: 'save'})), {
+    ok: false, error: 'web_signed_out', message: 'Sign in to Claude.ai, then save this account',
+  });
+  assert.deepEqual(clone(await signedOut.sendPopup({action: 'export'})), {
+    ok: false, error: 'unknown_action', message: 'Unknown action',
+  });
+
+  const locked = await makeHarness({nativeOverrides: {
+    vault_put: {ok: false, error: 'keychain_unavailable', message: 'Unlock your Keychain and try again.'},
+  }});
+  await locked.waitForNative('pending_selection');
+  await locked.settle();
+  assert.deepEqual(clone(await locked.sendPopup({action: 'save'})), {
+    ok: false, error: 'keychain_unavailable', message: 'Unlock your Keychain and try again.',
+  });
 });
 
 test('a popup selection gives the companion a deadline shorter than its own wait', async () => {

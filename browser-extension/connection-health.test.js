@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import vm from 'node:vm';
 
-import {SelectionMemory} from './session-core.js';
+import {SelectionMemory, failure} from './session-core.js';
 
 // Real SHA-256 that settles as a microtask, so flush() covers it.
 const sha256=async(_algorithm,data)=>new Uint8Array(createHash('sha256').update(data).digest()).buffer;
@@ -55,7 +55,7 @@ async function harness({renewDuringSave=false}={}) {
   const code=(await readFile(new URL('./background.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/,'');
   vm.runInNewContext(code,{
     chrome,SessionSwitcher:Switcher,identityFrom:()=>null,claudeCookie:()=>true,browserScopedCookie:()=>false,
-    SelectionMemory,TextEncoder,
+    SelectionMemory,TextEncoder,failure,
     URL,AbortSignal,Date:{now:()=>now},crypto:{randomUUID:()=>String(++nextRequest),subtle:{digest:sha256}},
     setTimeout:(f,ms)=>{const id=++nextTimer;timers.set(id,{f,ms});return id;},
     clearTimeout:id=>timers.delete(id),queueMicrotask,
