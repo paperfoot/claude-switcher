@@ -207,7 +207,7 @@ Desktop sign-ins are separate from Chrome and Claude Code. Switching a Claude ac
 - **Code switched but Chrome did not.** The verified Code selection stays. Fix Chrome, then select the account again. In JSON output, `ok: true` with `browserReady: false` means the same thing.
 - **“Sign in needed”.** The saved login expired or was revoked. For Chrome, sign in again through the companion's **Add another account**. For Codex, type `reconnect codex` and the account in the palette.
 - **Claude Code still uses the old account.** Wait about 30 seconds for its Keychain cache. After a manual `cswap add`, run `claude-accounts refresh-code`.
-- **macOS asks whether Claude Switcher may use a Keychain item.** A local build is signed ad hoc, so each rebuild looks like a new app to the Keychain. Choose **Always Allow** once per saved item; the app keeps working while the question is open.
+- **macOS asks whether Claude Switcher may use a Keychain item.** Since 1.0.1 the switcher keeps its saved logins through Apple's `security` tool, which never asks. Updating from 1.0.0 can ask once per saved Codex login while it moves them over; after that, rebuilds and updates do not ask again.
 - **“Chrome login … expires”.** Saved Claude.ai logins last a few weeks. The menu warns three days ahead; sign in to that account in Chrome once and the companion saves the fresh login.
 - **Find out what happened.** Type `switch log` in the palette, or run `claude-accounts logs`. Redact emails and paths before you post anything in an issue.
 
