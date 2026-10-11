@@ -22,11 +22,12 @@ private final class MenuRefreshHarness {
         let menu = MenuBuilder.build(initial, target: target, actions: actions())
 
         check(menu.minimumWidth == UsageBarView.preferredWidth, "menu keeps the fixed native minimum width")
-        expectRows(in: menu, id: "claude-switcher.live-usage.alpha", [0, 9])
-        expectRows(in: menu, id: "claude-switcher.live-usage.beta", [99, 100], cached: true)
-        expectRows(in: menu, id: "claude-switcher.live-usage.gamma", [nil, nil])
-        expectRows(in: menu, id: "codex.usage.delta@example.test", [9, 99])
-        expectRows(in: menu, id: "codex.usage.echo@example.test", [100, 0], cached: true)
+        // Readings ten and fifteen minutes old are current: accounts refresh at different moments.
+        expectRows(in: menu, id: "claude-switcher.live-usage.alpha", [0, 9], stale: false)
+        expectRows(in: menu, id: "claude-switcher.live-usage.beta", [99, 100], stale: true)
+        expectRows(in: menu, id: "claude-switcher.live-usage.gamma", [nil, nil], stale: false)
+        expectRows(in: menu, id: "codex.usage.delta@example.test", [9, 99], stale: false)
+        expectRows(in: menu, id: "codex.usage.echo@example.test", [100, 0], stale: true)
         check(item(in: menu, id: "codex.usage.foxtrot@example.test") == nil,
               "disconnected Codex account has no usage row initially")
 
@@ -47,11 +48,16 @@ private final class MenuRefreshHarness {
         MenuBuilder.updateVisible(in: menu, input: busy)
 
         expectUnchanged(menu, from: baseline, context: "busy refresh")
-        expectRows(in: menu, id: "claude-switcher.live-usage.alpha", [100, 99])
-        expectRows(in: menu, id: "claude-switcher.live-usage.beta", [nil, nil], cached: true)
-        expectRows(in: menu, id: "claude-switcher.live-usage.gamma", [9, 0])
-        expectRows(in: menu, id: "codex.usage.delta@example.test", [0, 9])
-        expectRows(in: menu, id: "codex.usage.echo@example.test", [99, 100], cached: true)
+        // Alpha's five-hour window reset a second ago: its old 100% would describe a finished window.
+        expectRows(in: menu, id: "claude-switcher.live-usage.alpha", [nil, 99], stale: false)
+        check(usageView(in: menu, id: "claude-switcher.live-usage.alpha")?.rows.map(\.trailing) == ["↻ due", "↻ Tue 00:05"],
+              "a passed reset shows as due instead of the previous window's value")
+        expectRows(in: menu, id: "claude-switcher.live-usage.beta", [nil, nil], stale: false)
+        check(usageView(in: menu, id: "claude-switcher.live-usage.beta")?.rows.allSatisfy { $0.trailing == "Sign in" } == true,
+              "signed-out account hides its cached usage and asks for sign-in")
+        expectRows(in: menu, id: "claude-switcher.live-usage.gamma", [9, 0], stale: false)
+        expectRows(in: menu, id: "codex.usage.delta@example.test", [0, 9], stale: false)
+        expectRows(in: menu, id: "codex.usage.echo@example.test", [99, 100], stale: true)
         check(item(in: menu, id: "claude-switcher.profile.alpha")?.isEnabled == false,
               "Claude account actions disable while switching")
         check(item(in: menu, id: "codex.account.delta@example.test")?.isEnabled == false,
@@ -68,8 +74,13 @@ private final class MenuRefreshHarness {
         let updatedAlphaLabel = accessibilityLabel(in: menu, id: "claude-switcher.live-usage.alpha")
         check(updatedAlphaLabel != initialAlphaLabel,
               "accessibility label changes with live usage")
-        check(updatedAlphaLabel?.contains("100%") == true && updatedAlphaLabel?.contains("99%") == true,
-              "updated accessibility label contains the new percentages")
+        check(updatedAlphaLabel?.contains("99%") == true && updatedAlphaLabel?.contains("reset due") == true,
+              "updated accessibility label contains the new percentage and the due reset")
+        check(updatedAlphaLabel?.contains("100%") == false,
+              "updated accessibility label does not repeat the finished window's value")
+        let staleLabel = accessibilityLabel(in: menu, id: "codex.usage.echo@example.test")
+        check(staleLabel?.contains("about 99% used") == true && staleLabel?.contains("Last updated") == true,
+              "stale accessibility label says the value is approximate and when it was read")
         checkCustomViewTitles(in: menu)
 
         let settled = makeUpdatedInput()
@@ -122,7 +133,7 @@ private final class MenuRefreshHarness {
             "beta": .signedIn(email: "beta@example.test", plan: "pro"),
         ]
         let live: [String: LiveUsageSnapshot] = [
-            "alpha": snapshot("alpha@example.test", age: 30, five: 0, week: 9,
+            "alpha": snapshot("alpha@example.test", age: 600, five: 0, week: 9,
                               fiveReset: midnightReset, weekReset: now.addingTimeInterval(86_400)),
             "beta": snapshot("beta@example.test", age: 3_600, five: 99, week: 100,
                              fiveReset: now.addingTimeInterval(1_800), weekReset: now.addingTimeInterval(172_800)),
@@ -216,7 +227,7 @@ private final class MenuRefreshHarness {
 
     private func initialCodexAccounts() -> [CodexAccount] {
         [
-            codex("delta@example.test", connected: true, active: true, five: 9, week: 99, age: 20),
+            codex("delta@example.test", connected: true, active: true, five: 9, week: 99, age: 900),
             codex("echo@example.test", connected: true, active: false, five: 100, week: 0, age: 3_600,
                   failed: true),
             codex("foxtrot@example.test", connected: false, active: false, five: nil, week: nil, age: 0),
@@ -295,15 +306,14 @@ private final class MenuRefreshHarness {
         if !condition() { failures.append(message) }
     }
 
-    private func expectRows(in menu: NSMenu, id: String, _ expected: [Int?], cached: Bool? = nil) {
+    private func expectRows(in menu: NSMenu, id: String, _ expected: [Int?], stale: Bool) {
         guard let rows = usageView(in: menu, id: id)?.rows else {
             failures.append("missing usage view \(id)")
             return
         }
         check(rows.map(\.percent) == expected, "\(id) percentages are \(expected)")
-        if let cached {
-            check(rows.allSatisfy { $0.isCached == cached }, "\(id) cached state is \(cached)")
-        }
+        // Only a known value can be approximate; an unknown one is a plain dash.
+        check(rows.allSatisfy { $0.isStale == (stale && $0.percent != nil) }, "\(id) stale state is \(stale)")
     }
 
     private func expectSelected(_ menu: NSMenu, id selectedID: String) {

@@ -12,31 +12,63 @@ struct LiveUsageCacheTests {
                           sevenDay: LiveUsageWindow(percent: 64, resetsAt: now.addingTimeInterval(86400)))
     }
 
-    @Test func oldReadingsRemainVisibleAndMarkedCached() {
+    var signedIn: AccountStatus { .signedIn(email: "work@example.com", plan: nil) }
+
+    @Test func oldReadingsRemainVisibleAndMarkedStale() {
         let reading = snapshot(age: 3600)
-        let presentation = LiveUsagePresentation(profile: profile, status: .signedIn(email: "work@example.com", plan: nil),
-                                                snapshot: reading, failed: false, now: now)
+        let presentation = LiveUsagePresentation(profile: profile, status: signedIn, snapshot: reading, failed: false, now: now)
         #expect(presentation.snapshot == reading)
-        #expect(presentation.isCached)
+        #expect(presentation.isStale)
     }
 
-    @Test func freshReadingsAreNotMarkedCached() {
-        let presentation = LiveUsagePresentation(profile: profile, status: .signedIn(email: "work@example.com", plan: nil),
-                                                snapshot: snapshot(age: 20), failed: false, now: now)
-        #expect(presentation.snapshot != nil)
-        #expect(!presentation.isCached)
+    /// Accounts refresh at different moments; a reading a few refresh cycles old is still current.
+    @Test func readingsStayFreshForTwentyMinutes() {
+        let current: [TimeInterval] = [20, 6 * 60, 19 * 60, LiveUsagePolicy.staleAfter]
+        for age in current {
+            let presentation = LiveUsagePresentation(profile: profile, status: signedIn, snapshot: snapshot(age: age),
+                                                    failed: false, now: now)
+            #expect(presentation.snapshot != nil)
+            #expect(!presentation.isStale, "a reading \(Int(age)) s old is not stale")
+        }
+        let stale: [TimeInterval] = [LiveUsagePolicy.staleAfter + 1, 3600]
+        for age in stale {
+            let presentation = LiveUsagePresentation(profile: profile, status: signedIn, snapshot: snapshot(age: age),
+                                                    failed: false, now: now)
+            #expect(presentation.isStale, "a reading \(Int(age)) s old is stale")
+        }
+    }
+
+    @Test func failedRefreshIsStaleEvenWhenRecent() {
+        let failed = LiveUsagePresentation(profile: profile, status: signedIn, snapshot: snapshot(age: 20), failed: true, now: now)
+        #expect(failed.snapshot != nil)
+        #expect(failed.isStale)
     }
 
     @Test func startupAndOfflinePreserveCache() {
         for status: AccountStatus? in [nil, .unavailable] {
             let presentation = LiveUsagePresentation(profile: profile, status: status, snapshot: snapshot(), failed: false, now: now)
             #expect(presentation.snapshot != nil)
-            #expect(presentation.isCached)
+            // A pending identity check says nothing about the reading's age.
+            #expect(!presentation.isStale)
         }
-        let failed = LiveUsagePresentation(profile: profile, status: .signedIn(email: "work@example.com", plan: nil),
-                                          snapshot: snapshot(), failed: true, now: now)
-        #expect(failed.snapshot != nil)
-        #expect(failed.isCached)
+    }
+
+    @Test func codexRowsShareTheStaleRule() {
+        #expect(LiveUsagePolicy.isStale(nil, failed: false, now: now))
+        #expect(LiveUsagePolicy.isStale(snapshot(age: 20), failed: true, now: now))
+        #expect(!LiveUsagePolicy.isStale(snapshot(age: 10 * 60), failed: false, now: now))
+        #expect(LiveUsagePolicy.isStale(snapshot(age: 21 * 60), failed: false, now: now))
+    }
+
+    /// The last percentage of a finished window would describe the previous window.
+    @Test func expiredWindowIsUnknownWhileTheOtherStaysKnown() {
+        let reading = LiveUsageSnapshot(email: "work@example.com", fetchedAt: now.addingTimeInterval(-600),
+                                        fiveHour: LiveUsageWindow(percent: 97, resetsAt: now.addingTimeInterval(-60)),
+                                        sevenDay: LiveUsageWindow(percent: 64, resetsAt: now.addingTimeInterval(86400)))
+        let presentation = LiveUsagePresentation(profile: profile, status: signedIn, snapshot: reading, failed: false, now: now)
+        #expect(!presentation.isStale)
+        #expect(presentation.snapshot?.fiveHour?.displayedPercent(at: now) == nil)
+        #expect(presentation.snapshot?.sevenDay?.displayedPercent(at: now) == 64)
     }
 
     @Test func signOutAndOtherAccountsNeverShowCachedValues() {
@@ -91,6 +123,6 @@ struct LiveUsageCacheTests {
         let presentation = LiveUsagePresentation(profile: profile, status: nil, snapshot: reading, failed: false, now: later)
         #expect(presentation.snapshot?.fiveHour?.percent == 42)
         #expect(presentation.snapshot?.fiveHour?.displayedPercent(at: later) == nil)
-        #expect(presentation.isCached)
+        #expect(presentation.isStale)
     }
 }
