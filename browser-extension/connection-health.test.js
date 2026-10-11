@@ -15,11 +15,21 @@ async function harness({renewDuringSave=false}={}) {
   const timers=new Map(), ports=[], requests=[], alarms=[], cookieListeners=[];
   const storage={selection:{appliedAt:0,identity:null}};
   const actions=[];
+  let generation=0;
+  const jar=[{name:'sessionKey',value:'a-1',domain:'.claude.ai',path:'/',storeId:'0',session:false,expirationDate:2_000_000_000}];
+  // Claude renews a session cookie: a new value and a later expiry.
+  const renew=(name='sessionKey')=>{
+    generation++;
+    const cookie={name,value:`a-${generation}`,domain:'.claude.ai',path:'/',storeId:'0',session:false,expirationDate:2_000_000_000+generation};
+    const index=jar.findIndex(existing=>existing.name===name);
+    if(index<0)jar.push(cookie);else jar[index]=cookie;
+  };
   class Switcher {
-    async save(){
+    async save(onSaved){
       actions.push('save');
       await Promise.resolve();
-      if(renewDuringSave)for(const f of cookieListeners)f({removed:false,cookie:{name:'sessionKeyV3'}});
+      if(renewDuringSave){renew('sessionKeyV3');for(const f of cookieListeners)f({removed:false,cookie:{name:'sessionKeyV3'}});}
+      onSaved?.({email:'a@example.com',cookies:structuredClone(jar)});
       return {ok:true,email:'a@example.com'};
     }
     async status(){return {ok:true,email:'a@example.com',accounts:['a@example.com']};}
@@ -48,7 +58,7 @@ async function harness({renewDuringSave=false}={}) {
         ports.push(p);return p;
       }
     },
-    cookies:{onChanged:{addListener:f=>cookieListeners.push(f)}},
+    cookies:{getAll:async()=>structuredClone(jar),onChanged:{addListener:f=>cookieListeners.push(f)}},
     alarms:{create(){},onAlarm:{addListener:f=>alarms.push(f)}},
     storage:{local:{async get(key){return key in storage?{[key]:storage[key]}:{};},async set(values){Object.assign(storage,values);}}}
   };
@@ -63,7 +73,7 @@ async function harness({renewDuringSave=false}={}) {
   // Enough turns for connect: save, selection record update, then pending_selection.
   const flush=async()=>{for(let i=0;i<200;i++)await Promise.resolve();};
   await flush();
-  return {ports,requests,actions,flush,
+  return {ports,requests,actions,flush,storage,renew,
     advance(ms){now+=ms;},blockPing(value){blockPing=value;},blockSwitch(){blockSwitch=true;},
     releaseSwitch:()=>releaseSwitch(),
     async alarm(){for(const f of alarms)f();await flush();},
@@ -81,13 +91,46 @@ test('healthy alarm checks the local host without switching or resaving a fresh 
   assert.equal(h.ports.length,1);
 });
 
-test('five-minute maintenance saves the current login without switching accounts',async()=>{
-  const h=await harness();h.advance(300_000);await h.alarm();
-  assert.deepEqual(h.actions,['save','save']);
+test('five-minute maintenance checks the login but does not re-save unchanged cookies',async()=>{
+  const h=await harness();
+  assert.deepEqual(h.actions,['save']);
+  h.advance(300_000);await h.alarm();
+  assert.deepEqual(h.actions,['save']);
   await h.command({command:'status'});
   const status=h.requests.at(-1).result;
-  assert.equal(status.lastSessionSavedAt,1_300_000);
+  assert.equal(status.lastSessionSavedAt,1_000_000);
+  assert.equal(status.lastSessionCheckedAt,1_300_000);
   assert.equal(status.lastHealthCheckAt,1_300_000);
+  assert.equal(h.requests.some(request=>request.action==='vault_put'),false);
+});
+
+test('a reconnect does not re-save an unchanged login',async()=>{
+  const h=await harness();
+  await h.alarm();h.ports[0].disconnect();await h.flush();
+  h.advance(60_000);await h.alarm();
+  assert.equal(h.ports.length,2);
+  assert.deepEqual(h.actions,['save']);
+});
+
+test('renewed cookies are saved at the next check',async()=>{
+  const h=await harness();
+  h.renew();h.advance(300_000);await h.alarm();
+  assert.deepEqual(h.actions,['save','save']);
+  h.advance(300_000);await h.alarm();
+  assert.deepEqual(h.actions,['save','save']);
+});
+
+test('an unchanged login is still re-saved every six hours',async()=>{
+  const h=await harness();
+  h.advance(6*60*60*1000);await h.alarm();
+  assert.deepEqual(h.actions,['save','save']);
+});
+
+test('the stored save record holds a digest, never a cookie value',async()=>{
+  const h=await harness();
+  assert.match(h.storage.savedSession.digest,/^[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(h.storage).includes('a-0'),false);
+  assert.equal(JSON.stringify(h.storage).includes('a-1'),false);
 });
 
 test('a timed-out health check replaces the native connection',async()=>{
@@ -121,16 +164,21 @@ test('late messages and disconnects from a replaced host leave its replacement i
   assert.equal(h.requests.at(-1).port,h.ports[1]);
 });
 
-test('renewed alternate session cookies are saved',async()=>{
-  const h=await harness();await h.cookie('sessionKeyV3');await h.fireTimeout(1500);
+test('renewed alternate session cookies are saved promptly',async()=>{
+  const h=await harness();h.renew('sessionKeyV3');await h.cookie('sessionKeyV3');await h.fireTimeout(1500);
   assert.deepEqual(h.actions,['save','save']);
+});
+
+test('a cookie event without a changed session does not save again',async()=>{
+  const h=await harness();await h.cookie('sessionKey');await h.fireTimeout(1500);
+  assert.deepEqual(h.actions,['save']);
 });
 
 test('cookie updates during capture do not schedule another capture',async()=>{
   const h=await harness({renewDuringSave:true});
   await h.fireTimeout(1500);
   assert.deepEqual(h.actions,['save']);
-  await h.cookie('sessionKeyV3');await h.fireTimeout(1500);
+  h.renew('sessionKeyV3');await h.cookie('sessionKeyV3');await h.fireTimeout(1500);
   assert.deepEqual(h.actions,['save','save']);
   await h.fireTimeout(1500);
   assert.deepEqual(h.actions,['save','save']);
