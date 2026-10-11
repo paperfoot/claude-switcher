@@ -425,3 +425,19 @@ class LegacyHostTests(unittest.TestCase):
         self.assertIn("deadline", calls[0])
         self.assertNotIn("deadline", calls[1])
         self.assertIn("timeout", calls[1])
+
+
+class StampTests(unittest.TestCase):
+    def test_profiles_already_on_the_target_still_record_the_selection(self):
+        sent = []
+        def sender(path, command, email, **options):
+            if command == "status":
+                return {"ok": True, "email": "target@example.com", "accounts": ["target@example.com"]}
+            sent.append((path, options.get("selected_at")))
+            return {"ok": True, "email": email}
+        with mock.patch.object(browser_profiles.profile_transport, "connection_paths",
+                               return_value=[Path("/tmp/a.sock"), Path("/tmp/b.sock")]):
+            result = browser_profiles.switch(Path("/tmp"), "target@example.com", sender=sender,
+                                             deadline=browser_profiles.deadlines.Deadline(300), selected_at=123.0)
+        self.assertTrue(result["ok"])
+        self.assertEqual(sorted(stamp for _, stamp in sent), [123.0, 123.0])
