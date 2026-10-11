@@ -52,8 +52,30 @@ def _read_line(sock, timeout=2.0):
     return json.loads(bytes(data).split(b"\n", 1)[0].decode("utf-8"))
 
 
+DEFAULT_HANDLER = """
+def handle(message):
+    return {'ok': True, 'action': message['action']}
+"""
+
+# `slow` blocks its worker until `release` arrives, like a popup `select`.
+BLOCKING_HANDLER = """
+import threading
+released = threading.Event()
+def handle(message):
+    if message['action'] == 'slow':
+        released.wait(globals().get('SLOW_SECONDS', 5))
+        return {'ok': True, 'action': 'slow', 'released': released.is_set()}
+    if message['action'] == 'release':
+        released.set()
+    if message['action'] == 'big':
+        return {'ok': True, 'blob': 'x' * (nt.MAX_NATIVE_MESSAGE + 1)}
+    return {'ok': True, 'action': message['action']}
+"""
+
+
 class HostProcess:
-    def __init__(self, socket_path, origin=ORIGIN, timeout=None, wait_ready=True):
+    def __init__(self, socket_path, origin=ORIGIN, timeout=None, wait_ready=True,
+                 handler=DEFAULT_HANDLER, setup=""):
         setup_timeout = (
             f"nt.CLIENT_REQUEST_TIMEOUT = {float(timeout)!r}\n" if timeout is not None else ""
         )
@@ -61,14 +83,14 @@ class HostProcess:
 import os
 import sys
 from bridge import native_transport as nt
-{setup_timeout}original_prepare = nt._prepare_listener
+{setup_timeout}{setup}
+original_prepare = nt._prepare_listener
 def prepare(path):
     listener = original_prepare(path)
     os.write(2, b'READY\\n')
     return listener
 nt._prepare_listener = prepare
-def handle(message):
-    return {{'ok': True, 'action': message['action']}}
+{handler}
 raise SystemExit(nt.run_host(sys.argv[1], sys.argv[2], sys.argv[3], handle))
 """
         self.proc = subprocess.Popen(
@@ -247,6 +269,70 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(self.socket_path.stat().st_mode & 0o777, 0o600)
         host.proc.stdin.close()
         self.assertEqual(host.proc.wait(timeout=2), 0)
+        self.assertFalse(self.socket_path.exists())
+
+    def test_running_local_request_does_not_block_status_or_other_requests(self):
+        host = self.start_host(handler=BLOCKING_HANDLER)
+        host.write_native({"type": "request", "id": "select-1", "action": "slow"})
+        with self.connect() as client:
+            client.sendall(b'{"id":"status-1","command":"status"}\n')
+            self.assertEqual(
+                _read_native(host.proc.stdout),
+                {"type": "command", "id": "status-1", "command": "status"},
+            )
+            host.write_native({"type": "result", "id": "status-1", "result": {"ok": True}})
+            self.assertEqual(_read_line(client), {"ok": True})
+
+        host.write_native({"type": "request", "id": "ping-1", "action": "ping"})
+        self.assertEqual(
+            _read_native(host.proc.stdout),
+            {"type": "response", "id": "ping-1", "result": {"ok": True, "action": "ping"}},
+        )
+        host.write_native({"type": "request", "id": "release-1", "action": "release"})
+        responses = {message["id"]: message for message in
+                     (_read_native(host.proc.stdout), _read_native(host.proc.stdout))}
+        self.assertEqual(set(responses), {"select-1", "release-1"})
+        self.assertEqual(
+            responses["select-1"]["result"], {"ok": True, "action": "slow", "released": True}
+        )
+
+    def test_oversized_local_result_is_replaced_without_closing_host(self):
+        host = self.start_host(handler=BLOCKING_HANDLER)
+        host.write_native({"type": "request", "id": "big-1", "action": "big"})
+        self.assertEqual(
+            _read_native(host.proc.stdout),
+            {"type": "response", "id": "big-1",
+             "result": {"ok": False, "error": "response_too_large"}},
+        )
+        host.write_native({"type": "request", "id": "ping-1", "action": "ping"})
+        self.assertEqual(_read_native(host.proc.stdout)["id"], "ping-1")
+        self.assertIsNone(host.proc.poll())
+
+    def test_local_request_limit_replies_busy_instead_of_queueing(self):
+        host = self.start_host(handler=BLOCKING_HANDLER,
+                               setup="nt.MAX_LOCAL_REQUESTS = 1\nSLOW_SECONDS = 0.5")
+        host.write_native({"type": "request", "id": "select-1", "action": "slow"})
+        host.write_native({"type": "request", "id": "ping-1", "action": "ping"})
+        self.assertEqual(
+            _read_native(host.proc.stdout),
+            {"type": "response", "id": "ping-1", "result": {"ok": False, "error": "host_busy"}},
+        )
+
+    def test_eof_lets_a_running_local_request_finish_before_exit(self):
+        marker = Path(self.temporary.name) / "finished"
+        handler = f"""
+import time
+def handle(message):
+    time.sleep(0.3)
+    open({str(marker)!r}, 'w').close()
+    return {{'ok': True}}
+"""
+        host = self.start_host(handler=handler)
+        host.write_native({"type": "request", "id": "select-1", "action": "slow"})
+        time.sleep(0.05)
+        host.proc.stdin.close()
+        self.assertEqual(host.proc.wait(timeout=3), 0)
+        self.assertTrue(marker.exists())
         self.assertFalse(self.socket_path.exists())
 
     def test_send_request_helper(self):

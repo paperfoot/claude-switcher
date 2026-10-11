@@ -199,6 +199,40 @@ class BrowserProfilesTests(unittest.TestCase):
         self.assertEqual(sender.states[self.two]["email"], TARGET)
         self.assertNotIn(self.one, [call[0] for call in sender.calls])
 
+    def test_busy_profile_counts_as_connected_in_status(self):
+        sender = StatefulSender(
+            {
+                self.one: {"ok": True, "busy": True, "email": OLD_ONE},
+                self.two: {"ok": True, "email": OLD_ONE},
+            }
+        )
+        with mock.patch.object(
+            browser_profiles.profile_transport,
+            "connection_paths",
+            return_value=[self.one, self.two],
+        ):
+            result = browser_profiles.status(self.base, sender=sender)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["email"], OLD_ONE)
+        self.assertEqual(result["profiles"][0]["busy"], True)
+        self.assertNotIn("busy", result["profiles"][1])
+
+    def test_busy_profile_prevents_a_concurrent_fan_out(self):
+        sender = StatefulSender(
+            {
+                self.one: {"ok": True, "email": OLD_ONE},
+                self.two: {"ok": True, "busy": True, "email": OLD_TWO},
+            }
+        )
+
+        result = self.run_switch([self.one, self.two], sender, expected_profiles=2)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "switch_in_progress")
+        self.assertEqual(sender.switch_calls(), [])
+        self.assertEqual(sender.states[self.one]["email"], OLD_ONE)
+
     def test_expected_zero_allows_no_connections(self):
         sender = StatefulSender({})
 
