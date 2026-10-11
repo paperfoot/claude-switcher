@@ -622,3 +622,12 @@ test('an unauthorized target is reported as expired and preserves the failed pro
   assert.equal(result.httpStatus,401);
   assert.equal(await rig.probe(),EMAIL.A);
 });
+
+test('a switch that is no longer wanted when its turn comes changes nothing', async () => {
+  const rig = makeRig();
+  const before = JSON.stringify(rig.browser.jar ?? null);
+  const result = await rig.switcher.switchTo(EMAIL.B, null, Infinity, async () => false);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'selection_changed');
+  assert.equal(JSON.stringify(rig.browser.jar ?? null), before);
+});
