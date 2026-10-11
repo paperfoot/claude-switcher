@@ -121,11 +121,11 @@ def switch_code(email, deadline=None, reserve=0.0):
     deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
     validate_email(email)
     try:
-        timeout = deadline.timeout(deadlines.CSWAP_TIMEOUT, reserve)
+        timeout = deadline.timeout(deadlines.CSWAP_TIMEOUT, reserve + deadlines.IDENTITY_TIMEOUT)
     except deadlines.DeadlineExceeded:
         raise CodeSwitchNotStarted() from None
     run_backend('switch', email, '--json', timeout=timeout)
-    if code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT)) != email:
+    if code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT, reserve)) != email:
         raise RuntimeError('code_identity_mismatch')
     # cswap deliberately skips writes for an already-active account. A manual login
     # can leave its existing file cache behind even though Keychain is current.
@@ -178,6 +178,23 @@ def browser_state(deadline=None):
         return {'ok': False, 'error': 'browser_missing', 'accounts': []}
 
 
+def wait_for_lock(lock, deadline=None, cap=None):
+    """Take `lock`, waiting up to `cap` seconds (inside the deadline) for an automatic
+    check or another switch to finish. False when it stays busy."""
+    cap = deadlines.LOCK_WAIT if cap is None else cap
+    if deadline is not None:
+        cap = min(cap, max(0.0, deadline.remaining()))
+    limit = time.monotonic() + cap
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= limit:
+                return False
+            time.sleep(0.2)
+
+
 @logged_switch('chrome')
 def select_browser(email, expected_profiles=1, deadline=None):
     deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
@@ -185,8 +202,8 @@ def select_browser(email, expected_profiles=1, deadline=None):
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(BASE / 'switch.lock', 'a') as lock:
         os.chmod(lock.name, 0o600)
-        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
+        if not wait_for_lock(lock, deadline):
+            return {'ok': False, 'error': 'switch_in_progress'}
         # A deliberate Chrome-only choice also supersedes older Code selections, so
         # a profile that reconnects later does not switch back to the Code account.
         return browser_request('switch', email, expected_profiles=expected_profiles,
@@ -201,9 +218,11 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(BASE / 'switch.lock', 'a') as lock:
         os.chmod(BASE / 'switch.lock', 0o600)
-        # Serialise selections across the menu and the extension; fail promptly on contention.
-        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
+        # Serialise selections across the menu, the extension and automatic checks. An
+        # automatic check takes seconds, so wait for it rather than refuse the user's switch.
+        popup = verified_browser
+        if not wait_for_lock(lock, deadline, deadlines.POPUP_LOCK_WAIT if popup else None):
+            return {'ok': False, 'error': 'switch_in_progress'}
         # Profiles record this stamp when they switch, so a reconnect never re-applies
         # it and a profile that missed it can catch up later.
         selected_at = time.time()
@@ -276,8 +295,20 @@ def auto_events(threshold, timeout):
     return events
 
 
+def safe_identity(deadline):
+    """The current Code login, or None when it cannot be read in time."""
+    try:
+        return code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT))
+    except Exception:
+        return None
+
+
 def auto_tick(threshold, deadline=None, events=None):
-    """Let claude-swap decide whether Code should move; when it does, Chrome follows."""
+    """Let claude-swap decide whether Code should move; when it does, Chrome follows.
+
+    Whether Code moved is judged from the actual login before and after the engine runs,
+    so a timed-out or unreadable engine reply cannot leave Chrome behind unnoticed.
+    """
     deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
     low, high = AUTO_THRESHOLD_RANGE
     if not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or not low <= threshold <= high:
@@ -289,28 +320,34 @@ def auto_tick(threshold, deadline=None, events=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'ok': True, 'switched': False, 'reason': 'switch_in_progress'}
-        previous = code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT))
+        previous = safe_identity(deadline)
+        engine_failed = False
         if events is None:
-            events = auto_events(threshold, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT))
+            try:
+                events = auto_events(threshold, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT))
+            except (RuntimeError, OSError, subprocess.TimeoutExpired, deadlines.DeadlineExceeded):
+                engine_failed, events = True, []
         switch = next((event for event in events if event.get('event') == 'switch' and not event.get('dryRun')), None)
-        if switch is None:
+        trigger = switch.get('trigger') if switch and isinstance(switch.get('trigger'), str) else None
+        current = safe_identity(deadline) if (switch or engine_failed) else previous
+        if current == previous:
+            if switch is not None:
+                # The engine reported a switch that did not land; nothing moved.
+                event_log.emit(BASE, 'switch_finished', scope='auto', ok=False, error='code_switch_failed')
+                return {'ok': False, 'switched': False, 'error': 'code_switch_failed', 'trigger': trigger}
+            if engine_failed:
+                return {'ok': True, 'switched': False, 'reason': 'auto_switch_failed'}
             if any(event.get('event') == 'all-exhausted' for event in events):
-                reason = 'all_exhausted'
-            else:
-                reason = next((str(event.get('reason')) for event in events if event.get('event') == 'no-switch'),
-                              'no_action')
+                return {'ok': True, 'switched': False, 'reason': 'all_exhausted'}
+            reason = next((str(event.get('reason')) for event in events if event.get('event') == 'no-switch'), 'no_action')
             return {'ok': True, 'switched': False, 'reason': reason}
-        trigger = switch.get('trigger') if isinstance(switch.get('trigger'), str) else None
-        target = switch.get('to') if isinstance(switch.get('to'), dict) else {}
-        # claude-swap has already moved Code. Confirm it before Chrome follows.
+        # Code moved. Chrome follows the login Code actually has now.
+        moved = {'switched': True, 'codeEmail': current, 'previousEmail': previous, 'trigger': trigger}
         try:
-            email = validate_email(str(target.get('email') or ''))
+            email = validate_email(current or '')
         except ValueError:
             event_log.emit(BASE, 'switch_finished', scope='auto', ok=False, error='unknown_account')
-            return {'ok': False, 'switched': True, 'error': 'unknown_account', 'trigger': trigger}
-        if code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT)) != email:
-            event_log.emit(BASE, 'switch_finished', scope='auto', ok=False, error='code_switch_failed')
-            return {'ok': False, 'switched': True, 'error': 'code_switch_failed', 'trigger': trigger}
+            return {'ok': False, 'error': 'unknown_account', **moved}
         if deadline.remaining() >= deadlines.CACHE_REPAIR_MINIMUM:
             refresh_code_cache(email)
         selected_at = time.time()
@@ -333,8 +370,8 @@ def auto_tick(threshold, deadline=None, events=None):
         atomic_json(STATE, state)
         event_log.emit(BASE, 'switch_finished', scope='auto', ok=ready or web.get('error') == 'browser_missing',
                        browserReady=ready, **({'browserError': web.get('error')} if not ready else {}))
-        return {'ok': True, 'switched': True, 'codeEmail': email, 'previousEmail': previous, 'trigger': trigger,
-                'browserReady': ready, 'browserError': None if ready else web.get('error', 'web_unavailable')}
+        return {'ok': True, **moved, 'codeEmail': email, 'browserReady': ready,
+                'browserError': None if ready else web.get('error', 'web_unavailable')}
 
 
 def snapshot(deadline=None):
@@ -568,8 +605,8 @@ def handle_native(message):
                 # A partial result keeps its Chrome failure details for diagnostics.
                 return {'ok': True}
             with open(BASE / 'switch.lock', 'a') as lock:
-                try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
+                if not wait_for_lock(lock, cap=deadlines.POPUP_LOCK_WAIT):
+                    return {'ok': False, 'error': 'switch_in_progress'}
                 if read_state() != state:
                     return {'ok': False, 'error': 'selection_changed'}
                 state.update(browserReady=True, webEmail=email, message='Chrome and Code switched')
