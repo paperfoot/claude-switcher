@@ -44,7 +44,7 @@ public struct JevRouter: Sendable {
 
     /// A router for the key saved in the Keychain, or `nil` when there is none. Only the item's
     /// existence is checked here, which never prompts; the key is read when Jev is asked.
-    public static func stored(storage: any JevKeyStorage = JevKeychainStorage()) -> JevRouter? {
+    public static func stored(storage: any JevKeyStorage = JevSecurityStorage()) -> JevRouter? {
         guard storage.exists(service: JevKeyStore.service, account: JevKeyStore.account) else { return nil }
         return JevRouter(keySource: { JevKeyStore.load(from: storage) })
     }
@@ -346,25 +346,61 @@ public enum JevKeyStoreError: Error, Equatable {
     case keychain(OSStatus)
 }
 
+/// The TypeSafe key kept through `security`, so a rebuilt app never asks for it again. A key
+/// stored by an earlier version is moved over the first time it is read.
+public struct JevSecurityStorage: JevKeyStorage {
+    /// Where versions before 1.0.1 kept the key, owned by the app binary.
+    static let legacyService = "Claude Switcher TypeSafe"
+    private static let label = "Claude Switcher TypeSafe API key"
+    private let keychain: SecurityKeychain
+    private let legacy: (any JevKeyStorage)?
+
+    public init(keychain: SecurityKeychain = SecurityKeychain(), legacy: (any JevKeyStorage)? = JevKeychainStorage()) {
+        self.keychain = keychain
+        self.legacy = legacy
+    }
+
+    public func exists(service: String, account: String) -> Bool {
+        keychain.exists(service: service, account: account)
+            || (legacy?.exists(service: Self.legacyService, account: account) ?? false)
+    }
+
+    public func read(service: String, account: String) throws -> Data? {
+        if let data = try keychain.read(service: service, account: account) { return data }
+        guard let legacy, let data = try legacy.read(service: Self.legacyService, account: account) else { return nil }
+        try keychain.write(data, service: service, account: account, label: Self.label)
+        return data
+    }
+
+    public func write(_ data: Data, service: String, account: String) throws {
+        try keychain.write(data, service: service, account: account, label: Self.label)
+    }
+
+    public func delete(service: String, account: String) throws {
+        try keychain.delete(service: service, account: account)
+        try? legacy?.delete(service: Self.legacyService, account: account)
+    }
+}
+
 /// The TypeSafe API key that turns on Jev in the palette.
 public enum JevKeyStore {
-    public static let service = "Claude Switcher TypeSafe"
+    public static let service = "Claude Switcher Jev"
     public static let account = "api-key"
 
     /// The saved key, or `nil` when there is none or the Keychain cannot be read.
-    public static func load(from storage: any JevKeyStorage = JevKeychainStorage()) -> String? {
+    public static func load(from storage: any JevKeyStorage = JevSecurityStorage()) -> String? {
         guard let data = try? storage.read(service: service, account: account) else { return nil }
         let key = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return key.isEmpty ? nil : key
     }
 
-    public static func save(_ key: String, to storage: any JevKeyStorage = JevKeychainStorage()) throws {
+    public static func save(_ key: String, to storage: any JevKeyStorage = JevSecurityStorage()) throws {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw JevKeyStoreError.empty }
         try storage.write(Data(trimmed.utf8), service: service, account: account)
     }
 
-    public static func remove(from storage: any JevKeyStorage = JevKeychainStorage()) throws {
+    public static func remove(from storage: any JevKeyStorage = JevSecurityStorage()) throws {
         try storage.delete(service: service, account: account)
     }
 }

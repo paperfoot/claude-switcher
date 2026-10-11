@@ -66,6 +66,37 @@ public protocol CodexCredentialVault: Sendable {
     func save(_ data: Data, email: String) throws
 }
 
+/// Codex logins kept through `security`, so a rebuilt app never has to ask for them again.
+/// A login saved by an earlier version is copied over the first time it is read: that read
+/// can still ask once, and the copy never asks.
+public struct CodexSecurityVault: CodexCredentialVault {
+    static let service = "Claude Switcher Codex"
+    private let keychain: SecurityKeychain
+    private let legacy: (any CodexCredentialVault)?
+
+    public init(keychain: SecurityKeychain = SecurityKeychain(),
+                legacy: (any CodexCredentialVault)? = CodexKeychainVault()) {
+        self.keychain = keychain
+        self.legacy = legacy
+    }
+
+    public func load(email: String) throws -> Data? {
+        let account = email.lowercased()
+        if let data = try keychain.read(service: Self.service, account: account) { return data }
+        guard let legacy, let data = try legacy.load(email: account) else { return nil }
+        try save(data, email: account)
+        return data
+    }
+
+    public func save(_ data: Data, email: String) throws {
+        let account = email.lowercased()
+        try keychain.write(data, service: Self.service, account: account, label: "Claude Switcher Codex login")
+        guard try keychain.read(service: Self.service, account: account) == data else { throw CodexSwitchError.keychain }
+    }
+}
+
+/// How versions before 1.0.1 stored Codex logins: owned by the app binary, so every rebuild
+/// asked again. Only read now, to move each login to `CodexSecurityVault`.
 public struct CodexKeychainVault: CodexCredentialVault {
     public init() {}
     private func query(_ email: String) -> [String: Any] {

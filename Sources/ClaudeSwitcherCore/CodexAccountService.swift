@@ -8,7 +8,7 @@ public actor CodexAccountService {
     private var accounts: [CodexAccount]
     private var busy = false
     public init(emails: [String], aliases: [String: String] = [:], files: CodexAccountFiles = .init(),
-                vault: any CodexCredentialVault = CodexKeychainVault(), runtime: any CodexAccountVerifying) {
+                vault: any CodexCredentialVault = CodexSecurityVault(), runtime: any CodexAccountVerifying) {
         self.files = files; self.vault = vault; self.runtime = runtime
         accounts = files.loadCache(emails: emails, aliases: aliases)
     }
