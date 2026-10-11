@@ -289,6 +289,19 @@ test('a deferred popup Code selection keeps an incoming menu switch busy', async
   assert.equal(harness.currentEmail(), EMAIL.B);
 });
 
+test('a popup selection gives the companion a deadline shorter than its own wait', async () => {
+  const harness = await makeHarness();
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+
+  const before = Date.now();
+  assert.deepEqual(clone(await harness.sendPopup({action: 'switch', email: EMAIL.B})), {ok: true, email: EMAIL.B});
+  const select = harness.nativeRequests.find(message => message.action === 'select');
+  assert.equal(select.email, EMAIL.B);
+  assert.ok(select.deadline >= before + 150_000 && select.deadline <= Date.now() + 150_000,
+    'the companion must finish 30 s before the popup stops waiting at 180 s');
+});
+
 test('a status request during a popup switch answers at once with the committed login', async () => {
   const harness = await makeHarness({deferSelect: true});
   await harness.waitForNative('pending_selection');
