@@ -1282,3 +1282,124 @@ class DeadlineCoordinatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoTickTests(unittest.TestCase):
+    """One claude-swap auto-switch decision, with Chrome following any Code switch."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name) / "claude-switcher"
+        self.state = self.base / "coordinated-state.json"
+        self.stack = ExitStack()
+        self.stack.enter_context(mock.patch.object(companion, "BASE", self.base))
+        self.stack.enter_context(mock.patch.object(companion, "STATE", self.state))
+        self.stack.enter_context(mock.patch.object(
+            companion, "validate_email", autospec=True, side_effect=self.validate))
+        self.code_identity = self.stack.enter_context(mock.patch.object(
+            companion, "code_identity", autospec=True, side_effect=[OLD_EMAIL, TARGET_EMAIL]))
+        self.browser_request = self.stack.enter_context(mock.patch.object(
+            companion, "browser_request", autospec=True, return_value={"ok": True, "email": TARGET_EMAIL}))
+        self.refresh = self.stack.enter_context(mock.patch.object(
+            companion, "refresh_code_cache", autospec=True, return_value={"ok": True, "cacheUpdated": False}))
+
+    def tearDown(self):
+        self.stack.close()
+        self.temporary.cleanup()
+
+    @staticmethod
+    def validate(email):
+        if email.lower() not in (OLD_EMAIL, TARGET_EMAIL):
+            raise ValueError("unknown_account")
+        return email.lower()
+
+    @staticmethod
+    def switched_to(email, dry_run=False):
+        return [{"event": "poll", "active": {"number": 1, "email": OLD_EMAIL}},
+                {"event": "switch", "trigger": "proactive", "from": {"number": 1, "email": OLD_EMAIL},
+                 "to": {"number": 2, "email": email}, "dryRun": dry_run}]
+
+    def stored_state(self):
+        return json.loads(self.state.read_text())
+
+    def test_no_action_reports_the_engine_reason_and_leaves_chrome_alone(self):
+        events = [{"event": "poll"}, {"event": "no-switch", "reason": "below-threshold", "detail": "54% < 95%"}]
+        result = companion.auto_tick(95, events=events)
+        self.assertEqual(result, {"ok": True, "switched": False, "reason": "below-threshold"})
+        self.browser_request.assert_not_called()
+        self.assertFalse(self.state.exists())
+
+    def test_all_accounts_exhausted_is_reported(self):
+        events = [{"event": "poll"}, {"event": "all-exhausted", "earliestResetAt": None}]
+        self.assertEqual(companion.auto_tick(95, events=events)["reason"], "all_exhausted")
+
+    def test_a_dry_run_switch_event_changes_nothing(self):
+        result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL, dry_run=True))
+        self.assertFalse(result["switched"])
+        self.browser_request.assert_not_called()
+
+    def test_switch_moves_chrome_and_records_a_selection_for_late_profiles(self):
+        result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
+        self.assertEqual(result["switched"], True)
+        self.assertEqual(result["codeEmail"], TARGET_EMAIL)
+        self.assertEqual(result["previousEmail"], OLD_EMAIL)
+        self.assertTrue(result["browserReady"])
+        self.assertEqual(self.browser_request.call_args.args[:2], ("switch", TARGET_EMAIL))
+        state = self.stored_state()
+        self.assertTrue(state["ok"])
+        self.assertTrue(state["automatic"])
+        self.assertEqual(state["codeEmail"], TARGET_EMAIL)
+        self.assertIsInstance(state["selectedAt"], float)
+
+    def test_closed_chrome_still_records_a_selection_to_catch_up_on(self):
+        self.browser_request.return_value = {"ok": False, "error": "browser_missing"}
+        result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
+        self.assertFalse(result["browserReady"])
+        state = self.stored_state()
+        self.assertTrue(state["ok"])
+        self.assertFalse(state["browserReady"])
+
+    def test_a_chrome_failure_keeps_code_switched_and_is_recorded_as_partial(self):
+        self.browser_request.return_value = {"ok": False, "error": "web_switch_failed"}
+        result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["browserError"], "web_switch_failed")
+        state = self.stored_state()
+        self.assertTrue(state["partial"])
+        self.assertEqual(state["error"], "code_only_after_web_failure")
+
+    def test_chrome_does_not_follow_when_code_did_not_land_on_the_target(self):
+        self.code_identity.side_effect = [OLD_EMAIL, OLD_EMAIL]
+        result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
+        self.assertEqual(result["error"], "code_switch_failed")
+        self.browser_request.assert_not_called()
+
+    def test_an_account_the_switcher_does_not_know_is_not_mirrored(self):
+        result = companion.auto_tick(95, events=self.switched_to("stranger@example.com"))
+        self.assertEqual(result["error"], "unknown_account")
+        self.browser_request.assert_not_called()
+
+    def test_a_running_switch_makes_the_tick_skip(self):
+        self.base.mkdir(parents=True)
+        with open(self.base / "switch.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
+        self.assertEqual(result, {"ok": True, "switched": False, "reason": "switch_in_progress"})
+
+    def test_an_out_of_range_threshold_is_refused(self):
+        for threshold in (101, 10, float("nan")):
+            self.assertEqual(companion.auto_tick(threshold, events=[])["error"], "invalid_request")
+
+    def test_engine_output_is_parsed_and_its_failure_raises(self):
+        output = b'{"event":"poll"}\n{"event":"no-switch","reason":"below-threshold"}\nnot json\n'
+        completed = types.SimpleNamespace(returncode=2, stdout=output, stderr=b"")
+        with mock.patch.object(companion, "configuration", return_value={"cswap": "/bin/cswap"}), \
+                mock.patch.object(companion.subprocess, "run", return_value=completed) as run:
+            events = companion.auto_events(95.0, timeout=30)
+        self.assertEqual([event["event"] for event in events], ["poll", "no-switch"])
+        self.assertEqual(run.call_args.args[0], ["/bin/cswap", "auto", "--once", "--json", "--threshold", "95"])
+        failed = types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+        with mock.patch.object(companion, "configuration", return_value={"cswap": "/bin/cswap"}), \
+                mock.patch.object(companion.subprocess, "run", return_value=failed):
+            with self.assertRaises(RuntimeError):
+                companion.auto_events(95.0, timeout=30)
