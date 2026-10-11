@@ -515,7 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func setupSwitching(_ sender: NSMenuItem) {
+    @objc private func setupSwitching(_ sender: Any?) {
         if let page = Bundle.main.url(forResource: "setup", withExtension: "html") {
             NSWorkspace.shared.open(page)
         }
@@ -995,7 +995,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The only path by which this app ever asks Claude to quit: this menu item, then an
     /// explicit confirmation. Nothing that quits anything runs on its own initiative — the one
     /// automatic behaviour in this app, `considerReopenAfterUpdate`, can only launch.
-    @objc private func installUpdate(_ sender: NSMenuItem) {
+    @objc private func installUpdate(_ sender: Any?) {
         // The status menu still opens while an alert is up, so this can be reached from inside
         // another modal — including its own confirmation.
         guard !isBusy, updateProgress == nil, !isPresentingModal else { return }
@@ -1240,7 +1240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
-    @objc private func toggleReopenAfterUpdate(_ sender: NSMenuItem) {
+    @objc private func toggleReopenAfterUpdate(_ sender: Any?) {
         guard !isPresentingModal, !refuseWhileConfigIsBroken() else { return }
         config.reopenAfterUpdate.toggle()
         guard saveConfig(failureTitle: "Could not save the setting") else {
@@ -1252,7 +1252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Blocking Claude's auto-updates
 
-    @objc private func toggleBlockUpdates(_ sender: NSMenuItem) {
+    @objc private func toggleBlockUpdates(_ sender: Any?) {
         guard !isPresentingModal, !refuseWhileConfigIsBroken() else { return }
         if !config.blockClaudeUpdates {
             let alert = NSAlert()
@@ -1362,7 +1362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    @objc private func showDiagnostics(_ sender: NSMenuItem) {
+    @objc private func showDiagnostics(_ sender: Any?) {
         reloadConfig()
         running = InstanceManager.runningInstances(appPath: config.claudeAppPath)
         let appPath = config.claudeAppPath
@@ -1426,7 +1426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         LoginItem.state(for: SMAppService.mainApp.status, runsFromBundle: LoginItem.runsFromBundle())
     }
 
-    @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
+    @objc private func toggleLaunchAtLogin(_ sender: Any?) {
         let service = SMAppService.mainApp
         do {
             if service.status == .enabled {
@@ -1451,8 +1451,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func quit(_ sender: NSMenuItem) {
+    @objc private func quit(_ sender: Any?) {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Command palette
+
+    /// The palette's view of the app, from the same state the menu shows. No I/O.
+    private func paletteContext() -> PaletteContext {
+        let coordinated = CoordinatedSetup.load()?.enabled == true
+        let selected = selectedEmailOverride ?? coordinatedSnapshot?.codeEmail
+        let now = Date()
+        var accounts: [PaletteAccount] = config.profiles.compactMap { profile in
+            let status = accountStatuses[profile.id]
+            guard let email = profile.expectedEmail ?? status?.email else { return nil }
+            let reading = LiveUsagePresentation(profile: profile, status: status, snapshot: liveUsage[profile.id],
+                                                failed: usageFailures.contains(profile.id), now: now).snapshot
+            let signedOut = status == .signedOut
+                || (status.map { $0 != .unavailable && !$0.matches(profile.expectedEmail) } ?? false)
+            return PaletteAccount(product: .claude, id: profile.id, email: email,
+                                  isSelected: coordinated && email.caseInsensitiveCompare(selected ?? "") == .orderedSame,
+                                  needsSignIn: signedOut,
+                                  fiveHourUsed: reading?.fiveHour?.displayedPercent(at: now),
+                                  weekUsed: reading?.sevenDay?.displayedPercent(at: now))
+        }
+        accounts += codexAccounts.map { account in
+            PaletteAccount(product: .codex, id: account.email, email: account.email, isSelected: account.active,
+                           needsSignIn: !account.connected,
+                           fiveHourUsed: account.usage?.fiveHour?.displayedPercent(at: now),
+                           weekUsed: account.usage?.sevenDay?.displayedPercent(at: now))
+        }
+        let desktop = config.profiles.map { profile in
+            PaletteDesktopProfile(id: profile.id, label: profile.isDefaultProfile ? "Default desktop" : profile.label,
+                                  isRunning: ProfileMatching.isRunning(profile, in: running))
+        }
+        var toggles: [PaletteToggle: Bool] = [
+            .shareHistory: desktopHistory?.enabled ?? false,
+            .reopenAfterUpdate: config.reopenAfterUpdate,
+            .pauseDesktopUpdates: config.blockClaudeUpdates,
+        ]
+        switch launchAtLoginState() {
+        case .enabled: toggles[.launchAtLogin] = true
+        case .disabled, .requiresApproval: toggles[.launchAtLogin] = false
+        case .unavailable: break
+        }
+        return PaletteContext(accounts: accounts, desktopProfiles: desktop, toggles: toggles,
+                              stagedUpdateVersion: running.isEmpty ? nil : blockedUpdate.map { "\($0.staged)" },
+                              coordinated: coordinated, jevAvailable: false)
+    }
+
+    /// Runs a palette choice through the same paths as the old menu items, including their
+    /// confirmations for anything destructive.
+    private func performPalette(_ action: PaletteAction) {
+        switch action {
+        case .switchClaude(let id):
+            if CoordinatedSetup.load()?.enabled == true { switchAccount(profileID: id) } else { openTerminal(profileID: id) }
+        case .switchCodex(let email): selectCodex(email: email, reconnect: false)
+        case .connectCodex(let email): selectCodex(email: email, reconnect: true)
+        case .addClaude(let email): addAccount(email: email)
+        case .removeClaude(let id): removeProfile(id: id)
+        case .renameClaude(let id): renameProfile(id: id)
+        case .openDesktop(let id): openDesktop(profileID: id)
+        case .copyTerminalCommand(let id): copyTerminalCommand(profileID: id)
+        case .toggle(let toggle):
+            switch toggle {
+            case .launchAtLogin: toggleLaunchAtLogin(nil)
+            case .shareHistory: desktopHistory?.toggle()
+            case .reopenAfterUpdate: toggleReopenAfterUpdate(nil)
+            case .pauseDesktopUpdates: toggleBlockUpdates(nil)
+            }
+        case .command(let command):
+            switch command {
+            case .connectChrome: setupSwitching(nil)
+            case .diagnostics: showDiagnostics(nil)
+            case .openSwitchLog: openSwitchLog()
+            case .syncHistory: desktopHistory?.refresh(force: true)
+            case .undoHistory: desktopHistory?.undoLastMove()
+            case .chooseClaudeApp: chooseClaudeApp(nil)
+            case .installUpdate: installUpdate(nil)
+            case .refreshUsage:
+                refreshSignInStates(force: true)
+                refreshCodex(force: true)
+            case .quit: NSApp.terminate(nil)
+            }
+        case .askJev:
+            break   // The palette asks Jev itself and hands back a concrete action.
+        }
     }
 
     // MARK: - Alerts
