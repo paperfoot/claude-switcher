@@ -466,3 +466,20 @@ struct PaletteJevAndLimitTests {
         #expect(!unstaged.contains(.command(.installUpdate)))
     }
 }
+
+@Suite("Destructive defaults")
+struct PaletteDestructiveDefaultTests {
+    @Test("A remove verb that starts an account name is read as the name")
+    func removePrefixIsAName() {
+        let accounts = [
+            PaletteAccount(product: .claude, id: "delta", email: "delta@example.com", fiveHourUsed: 10, weekUsed: 10),
+            PaletteAccount(product: .claude, id: "team", email: "team@example.com", fiveHourUsed: 20, weekUsed: 20),
+        ]
+        let context = PaletteContext(accounts: accounts, coordinated: true)
+        for query in ["del", "delt"] {
+            let first = PaletteEngine.suggestions(for: query, context: context).first
+            #expect(first?.isDestructive == false, "\(query) must not default to Remove")
+            #expect(first?.action == .switchClaude(profileID: "delta"))
+        }
+    }
+}
