@@ -65,7 +65,8 @@ def _connections(base, deadline, exclude=None, sender=None):
 
 def _summary(rows):
     profiles = [dict(connection=path.name, **{key: state[key] for key in
-                ('ok', 'email', 'error', 'busy', 'version', 'lastHealthCheckAt', 'lastSessionSavedAt') if key in state}) for path, state in rows]
+                ('ok', 'email', 'error', 'busy', 'version', 'lastHealthCheckAt', 'lastSessionSavedAt',
+                 'lastSessionCheckedAt') if key in state}) for path, state in rows]
     emails = {state.get('email') for _, state in rows}
     ok = bool(rows) and all(state.get('ok') for _, state in rows)
     result = {'ok': ok, 'email': next(iter(emails)) if ok and len(emails) == 1 else None,

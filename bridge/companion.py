@@ -299,6 +299,35 @@ class InvalidData(ValueError):
     """A request carried data this coordinator refuses to store."""
 
 
+def same_saved_login(raw, entry):
+    """True when the stored entry already holds these cookies and this page.
+
+    `savedAt` differs on every capture and is ignored; cookie order is not stable.
+    """
+    try:
+        stored = json.loads(raw) if raw else None
+    except ValueError:
+        return False
+    if not isinstance(stored, dict) or not isinstance(stored.get('cookies'), list):
+        return False
+
+    def canonical(cookies):
+        return sorted(json.dumps(cookie, sort_keys=True, separators=(',', ':')) for cookie in cookies)
+
+    return canonical(stored['cookies']) == canonical(entry['cookies']) and stored.get('url') == entry.get('url')
+
+
+def remember_web_account(email):
+    """List the email among saved web logins; rewrite the file only if it is new."""
+    path = BASE / 'web-accounts.json'
+    with open(BASE / 'web-accounts.lock', 'a') as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        emails = json.loads(path.read_text()) if path.exists() else []
+        if email not in emails:
+            atomic_json(path, sorted(set(emails + [email])))
+
+
 # Failed replies always carry a snake_case code in `error`, which the app, the
 # popup and the event log map. `message` is optional text for people.
 MESSAGES = {
@@ -351,14 +380,14 @@ def handle_native(message):
                 if domain != 'claude.ai' and not domain.endswith('.claude.ai'): raise InvalidData()
             encoded = json.dumps(entry, separators=(',', ':'))
             if len(encoded) > 512_000: raise InvalidData()
-            macos_keychain.set_password(service, email, encoded)
-            if macos_keychain.get_password(service, email) != encoded: raise RuntimeError()
-            with open(BASE / 'web-accounts.lock', 'a') as lock:
-                os.chmod(lock.name, 0o600)
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
-                atomic_json(BASE / 'web-accounts.json', sorted(set(emails + [email])))
-            return {'ok': True}
+            # One Keychain read instead of a write, read-back and file rewrite when
+            # nothing changed; renewed cookies or a new page are still written.
+            unchanged = same_saved_login(macos_keychain.get_password(service, email), entry)
+            if not unchanged:
+                macos_keychain.set_password(service, email, encoded)
+                if macos_keychain.get_password(service, email) != encoded: raise RuntimeError()
+            remember_web_account(email)
+            return {'ok': True, 'saved': not unchanged}
         if action == 'vault_list':
             emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
             return {'ok': True, 'accounts': [e for e in emails if e in configured_emails()]}
