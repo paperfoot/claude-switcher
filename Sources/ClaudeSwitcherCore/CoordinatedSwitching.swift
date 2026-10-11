@@ -83,6 +83,21 @@ public struct CoordinatedResult: Decodable, Sendable {
     }
 }
 
+/// The outcome of one automatic-switch decision.
+public struct AutoSwitchResult: Decodable, Sendable {
+    public let ok: Bool
+    /// claude-swap moved Claude Code to `codeEmail`.
+    public let switched: Bool?
+    /// Why nothing changed, e.g. "below-threshold" or "all_exhausted".
+    public let reason: String?
+    public let codeEmail: String?
+    public let previousEmail: String?
+    /// claude-swap's trigger: "proactive", "at-limit" or "failover".
+    public let trigger: String?
+    public let browserReady: Bool?
+    public let browserError: String?
+}
+
 /// Bounded subprocess calls. The helper emits only identity/usage/result metadata here;
 /// Chrome's native-messaging channel is separate and never enters app diagnostics.
 public enum CoordinatedSwitching {
@@ -91,6 +106,11 @@ public enum CoordinatedSwitching {
     }
     public static func select(email: String, setup: CoordinatedSetup) throws -> CoordinatedResult {
         try JSONDecoder().decode(CoordinatedResult.self, from: run(setup: setup, arguments: ["switch", email]))
+    }
+    /// One claude-swap auto-switch decision. When it moves Claude Code to another account,
+    /// the helper moves the connected Chrome profiles to the same account before returning.
+    public static func autoTick(setup: CoordinatedSetup, threshold: Double) throws -> AutoSwitchResult {
+        try JSONDecoder().decode(AutoSwitchResult.self, from: run(setup: setup, arguments: ["auto-tick", String(threshold)]))
     }
     private static func run(setup: CoordinatedSetup, arguments: [String]) throws -> Data {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("claude-switch-\(UUID().uuidString)")

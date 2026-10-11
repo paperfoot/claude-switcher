@@ -68,10 +68,13 @@ public struct PaletteContext: Sendable {
     public var coordinated: Bool
     /// A TypeSafe key is stored, so free-form requests can be interpreted by Jev.
     public var jevAvailable: Bool
+    /// Usage percentage at which automatic switching moves on, for the setting's description.
+    public var autoSwitchThreshold: Int
 
     public init(accounts: [PaletteAccount] = [], desktopProfiles: [PaletteDesktopProfile] = [],
                 toggles: [PaletteToggle: Bool] = [:], stagedUpdateVersion: String? = nil,
-                coordinated: Bool = true, jevAvailable: Bool = false) {
+                coordinated: Bool = true, jevAvailable: Bool = false, autoSwitchThreshold: Int = 95) {
+        self.autoSwitchThreshold = autoSwitchThreshold
         self.accounts = accounts
         self.desktopProfiles = desktopProfiles
         self.toggles = toggles
@@ -236,7 +239,7 @@ public enum PaletteEngine {
         }
         makers.append { PaletteRows.addClaude(email: nil, score: $0) }
         if context.toggles[.autoSwitch] != nil {
-            makers.append { PaletteRows.entry(PaletteCatalog.entry(.autoSwitch), context: context, score: $0) }
+            makers.append { PaletteRows.entry(PaletteCatalog.entry(.autoSwitch, context: context), context: context, score: $0) }
         }
         for account in claude where account.isSelected {
             makers.append { PaletteRows.switchClaude(account, context: context, score: $0) }
@@ -940,14 +943,14 @@ struct PaletteEntry {
 enum PaletteCatalog {
     /// Available settings, then available commands, in display order.
     static func entries(for context: PaletteContext) -> [PaletteEntry] {
-        let toggles = PaletteToggle.allCases.filter { context.toggles[$0] != nil }.map { entry($0) }
+        let toggles = PaletteToggle.allCases.filter { context.toggles[$0] != nil }.map { entry($0, context: context) }
         let commands = PaletteCommand.allCases
             .filter { $0 != .installUpdate || context.stagedUpdateVersion != nil }
             .map { entry($0, context: context) }
         return toggles + commands
     }
 
-    static func entry(_ toggle: PaletteToggle) -> PaletteEntry {
+    static func entry(_ toggle: PaletteToggle, context: PaletteContext) -> PaletteEntry {
         // Any setting can be turned on or off, so these explain every one of them.
         let generic: [String: Double] = Dictionary(uniqueKeysWithValues: PaletteQuery.settingWords.map { ($0, 1) })
         func keywords(_ specific: [String: Double]) -> [String: Double] {
@@ -987,7 +990,7 @@ enum PaletteCatalog {
                                                 "stop": true, "resume": false, "unpause": false, "unblock": false])
         case .autoSwitch:
             return PaletteEntry(action: .toggle(toggle), name: "Auto-switch at limit",
-                                subtitle: "At \(PaletteEngine.limitPercent)% of a limit, move Claude to the freest account",
+                                subtitle: "At \(context.autoSwitchThreshold)% of a limit, move Claude to the account with most headroom",
                                 symbol: "arrow.triangle.swap",
                                 keywords: keywords(["auto": 1, "automatic": 1, "automatically": 0.9,
                                                     "autoswitch": 1, "auto-switch": 1, "limit": 1, "limits": 0.9,
