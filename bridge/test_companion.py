@@ -55,6 +55,8 @@ class CompanionTests(unittest.TestCase):
         self.run_backend = self.stack.enter_context(
             mock.patch.object(companion, "run_backend", autospec=True)
         )
+        self.stack.enter_context(mock.patch.object(companion.deadlines, "LOCK_WAIT", 0.05))
+        self.stack.enter_context(mock.patch.object(companion.deadlines, "POPUP_LOCK_WAIT", 0.05))
 
     def tearDown(self):
         self.stack.close()
@@ -1197,9 +1199,11 @@ class DeadlineCoordinatorTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         reserve = companion.deadlines.CODE_RESTORE_RESERVE
-        # The old identity read and the forward cswap both leave the restore reserve.
+        identity = companion.deadlines.IDENTITY_TIMEOUT
+        # The old identity read, the forward cswap and its identity check all leave the restore
+        # reserve; the forward cswap also leaves time for that identity check.
         self.assertEqual(self.identity_timeouts[0], min(15, 100 - reserve))
-        self.assertEqual(self.backend_calls, [(("switch", TARGET_EMAIL, "--json"), 100 - 1 - reserve)])
+        self.assertEqual(self.backend_calls, [(("switch", TARGET_EMAIL, "--json"), 100 - 1 - reserve - identity)])
         self.assertEqual(self.identity_timeouts[1], 15)
         self.refresh.assert_called_once_with(TARGET_EMAIL)
         self.assertIs(self.browser_request.call_args.kwargs["deadline"], deadline)
@@ -1225,8 +1229,11 @@ class DeadlineCoordinatorTests(unittest.TestCase):
         self.assertEqual([call[0] for call in self.backend_calls],
                          [("switch", TARGET_EMAIL, "--json"), ("switch", OLD_EMAIL, "--json")])
         forward, restore = (call[1] for call in self.backend_calls)
-        self.assertEqual(forward, 60)
-        self.assertEqual(restore, 120 - 1 - 60)
+        reserve = companion.deadlines.CODE_RESTORE_RESERVE
+        identity = companion.deadlines.IDENTITY_TIMEOUT
+        self.assertEqual(forward, min(60, 120 - 1 - reserve - identity))
+        # The restore keeps time for its own identity check before the deadline.
+        self.assertEqual(restore, min(60, 120 - 1 - forward - identity))
         self.assertLessEqual(self.clock.now, 120)
         self.browser_request.assert_not_called()
 
@@ -1297,7 +1304,7 @@ class AutoTickTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(
             companion, "validate_email", autospec=True, side_effect=self.validate))
         self.code_identity = self.stack.enter_context(mock.patch.object(
-            companion, "code_identity", autospec=True, side_effect=[OLD_EMAIL, TARGET_EMAIL]))
+            companion, "code_identity", autospec=True, return_value=OLD_EMAIL))
         self.browser_request = self.stack.enter_context(mock.patch.object(
             companion, "browser_request", autospec=True, return_value={"ok": True, "email": TARGET_EMAIL}))
         self.refresh = self.stack.enter_context(mock.patch.object(
@@ -1339,6 +1346,7 @@ class AutoTickTests(unittest.TestCase):
         self.browser_request.assert_not_called()
 
     def test_switch_moves_chrome_and_records_a_selection_for_late_profiles(self):
+        self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]
         result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
         self.assertEqual(result["switched"], True)
         self.assertEqual(result["codeEmail"], TARGET_EMAIL)
@@ -1352,6 +1360,7 @@ class AutoTickTests(unittest.TestCase):
         self.assertIsInstance(state["selectedAt"], float)
 
     def test_closed_chrome_still_records_a_selection_to_catch_up_on(self):
+        self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]
         self.browser_request.return_value = {"ok": False, "error": "browser_missing"}
         result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
         self.assertFalse(result["browserReady"])
@@ -1360,6 +1369,7 @@ class AutoTickTests(unittest.TestCase):
         self.assertFalse(state["browserReady"])
 
     def test_a_chrome_failure_keeps_code_switched_and_is_recorded_as_partial(self):
+        self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]
         self.browser_request.return_value = {"ok": False, "error": "web_switch_failed"}
         result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
         self.assertTrue(result["ok"])
@@ -1375,8 +1385,12 @@ class AutoTickTests(unittest.TestCase):
         self.browser_request.assert_not_called()
 
     def test_an_account_the_switcher_does_not_know_is_not_mirrored(self):
+        self.code_identity.side_effect = [OLD_EMAIL, "stranger@example.com"]
         result = companion.auto_tick(95, events=self.switched_to("stranger@example.com"))
         self.assertEqual(result["error"], "unknown_account")
+        # Code did move, so the app must hear about it rather than stay silent.
+        self.assertTrue(result["switched"])
+        self.assertEqual(result["codeEmail"], "stranger@example.com")
         self.browser_request.assert_not_called()
 
     def test_a_running_switch_makes_the_tick_skip(self):
@@ -1403,6 +1417,20 @@ class AutoTickTests(unittest.TestCase):
                 mock.patch.object(companion.subprocess, "run", return_value=failed):
             with self.assertRaises(RuntimeError):
                 companion.auto_events(95.0, timeout=30)
+
+    def test_an_engine_failure_after_code_moved_still_brings_chrome_along(self):
+        self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]
+        with mock.patch.object(companion, "auto_events", side_effect=RuntimeError("auto_switch_failed")):
+            result = companion.auto_tick(95)
+        self.assertTrue(result["switched"])
+        self.assertEqual(result["codeEmail"], TARGET_EMAIL)
+        self.assertEqual(self.browser_request.call_args.args[:2], ("switch", TARGET_EMAIL))
+
+    def test_an_engine_failure_without_a_move_is_quiet(self):
+        with mock.patch.object(companion, "auto_events", side_effect=RuntimeError("auto_switch_failed")):
+            result = companion.auto_tick(95)
+        self.assertEqual(result, {"ok": True, "switched": False, "reason": "auto_switch_failed"})
+        self.browser_request.assert_not_called()
 
 
 class ExpiryBackfillTests(unittest.TestCase):
@@ -1431,3 +1459,22 @@ class ExpiryBackfillTests(unittest.TestCase):
         # Each email is read at most once per process, including one with nothing saved.
         self.assertEqual(sorted(reads), sorted([TARGET_EMAIL, OLD_EMAIL]))
         self.assertNotIn("secret", (self.base / "web-accounts-meta.json").read_text())
+
+
+class LockWaitTests(unittest.TestCase):
+    def test_a_manual_switch_waits_for_a_short_automatic_check(self):
+        import threading
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "switch.lock"
+            held = open(path, "a")
+            fcntl.flock(held, fcntl.LOCK_EX)
+            threading.Timer(0.3, lambda: (fcntl.flock(held, fcntl.LOCK_UN), held.close())).start()
+            with open(path, "a") as lock:
+                self.assertTrue(companion.wait_for_lock(lock, cap=5))
+
+    def test_a_lock_held_past_the_wait_is_reported_busy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "switch.lock"
+            with open(path, "a") as held, open(path, "a") as lock:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                self.assertFalse(companion.wait_for_lock(lock, cap=0.3))
