@@ -289,6 +289,26 @@ test('a deferred popup Code selection keeps an incoming menu switch busy', async
   assert.equal(harness.currentEmail(), EMAIL.B);
 });
 
+test('a status request during a popup switch answers at once with the committed login', async () => {
+  const harness = await makeHarness({deferSelect: true});
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+
+  const popup = harness.sendPopup({action: 'switch', email: EMAIL.B});
+  await harness.waitForNative('select');
+  const status = await harness.sendMenu({id: 'menu-status', command: 'status'});
+  assert.equal(status.result.ok, true);
+  assert.equal(status.result.busy, true);
+  assert.equal(status.result.email, EMAIL.A);
+  assert.equal(status.result.version, '0.7.1');
+
+  harness.resolveDeferred('select');
+  assert.deepEqual(clone(await popup), {ok: true, email: EMAIL.B});
+  const after = await harness.sendMenu({id: 'menu-status-after', command: 'status'});
+  assert.equal(after.result.busy, undefined);
+  assert.equal(after.result.email, EMAIL.B);
+});
+
 test('reconnect saves the current browser account before restoring and acknowledging a pending selection', async () => {
   const harness = await makeHarness({pendingEmail: EMAIL.B});
   const ready = await harness.waitForNative('browser_ready');
