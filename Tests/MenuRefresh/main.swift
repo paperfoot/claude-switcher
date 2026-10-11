@@ -37,6 +37,7 @@ private final class MenuRefreshHarness {
         check(usageView(in: menu, id: "claude-switcher.live-usage.alpha")?.rows.first?.trailing == "↻ Tue 00:05",
               "reset just after midnight includes the next day and clock time")
         checkCustomViewTitles(in: menu)
+        checkCompactStructure(menu, context: "initial menu")
 
         check(menu.size.width >= UsageBarView.preferredWidth && menu.size.height > 0,
               "AppKit measures a real nonzero menu, not an uninitialized size")
@@ -120,8 +121,82 @@ private final class MenuRefreshHarness {
             check(detailText(in: reopened, id: "codex.status") == live.codexMessage,
                   "status text updates inside its existing fixed frame")
         }
+        checkCompactStructure(reopened, context: "reopened menu")
+        checkDesktopStates(target: target)
 
         return failures
+    }
+
+    /// Settings moved to the command palette: the menu ends with it and Quit.
+    private func checkCompactStructure(_ menu: NSMenu, context: String) {
+        check(allItems(in: menu).allSatisfy { $0.submenu == nil }, "\(context) has no submenus")
+        let tail = Array(menu.items.suffix(3))
+        check(tail.count == 3 && tail[0].isSeparatorItem, "\(context) separates the palette and Quit from the accounts")
+        let palette = item(in: menu, id: MenuBuilder.paletteItemID)
+        check(palette === tail.dropFirst().first && palette?.title == "Command…"
+              && palette?.action == NSSelectorFromString("openPalette:"),
+              "\(context) opens the palette from Command…")
+        check(palette?.keyEquivalent == " " && palette?.keyEquivalentModifierMask == [.option],
+              "\(context) shows the palette shortcut ⌥Space")
+        check(palette?.toolTip == "Switch, add or manage accounts by typing", "\(context) explains the palette")
+        let quit = menu.items.last
+        check(quit?.identifier?.rawValue == MenuBuilder.quitItemID && quit?.title == "Quit Claude Switcher"
+              && quit?.keyEquivalent == "q" && quit?.keyEquivalentModifierMask == [.command],
+              "\(context) ends with Quit ⌘Q")
+    }
+
+    /// A waiting update and Desktop results stay visible even though Desktop actions moved.
+    private func checkDesktopStates(target: NSObject) {
+        var input = makeUpdatedInput()
+        input.blockedUpdate = StagedUpdate(installed: AppVersion(short: "1.4.0", build: "140"),
+                                           staged: AppVersion(short: "1.5.0", build: "150"),
+                                           updateBundlePath: "/tmp/fictional-update/Claude.app")
+        input.running = [RunningInstance(pid: 4242, profile: .defaultProfile)]
+        input.autoReopenNotice = "Reopened Beta after Claude updated to 1.5.0 at 09:00."
+        input.historyMessage = "Code history synced for two fictional accounts."
+        let menu = MenuBuilder.build(input, target: target, actions: actions())
+        let install = item(in: menu, id: MenuBuilder.installItemID)
+        check(install?.title == "Install Claude 1.5.0…" && install?.isEnabled == true
+              && install?.action == NSSelectorFromString("noop:"),
+              "a waiting Claude update is offered at the top level")
+        check(detailText(in: menu, id: "desktop.reopen-notice") == input.autoReopenNotice,
+              "the automatic reopen notice is visible")
+        check(detailText(in: menu, id: "desktop.history-status") == input.historyMessage,
+              "the history result is visible")
+        check(item(in: menu, id: "desktop.update-progress") == nil, "no progress row before installing")
+        checkCompactStructure(menu, context: "menu with Desktop states")
+        checkCustomViewTitles(in: menu)
+
+        let baseline = IdentitySnapshot(menu)
+        var installing = input
+        installing.isBusy = true
+        installing.updateProgress = "Installing update…"
+        installing.historyMessage = "Code history sync finished."
+        MenuBuilder.updateVisible(in: menu, input: installing)
+        expectUnchanged(menu, from: baseline, context: "update progress refresh")
+        check(item(in: menu, id: MenuBuilder.installItemID)?.isEnabled == false,
+              "the install offer disables once installing starts")
+        check(item(in: menu, id: MenuBuilder.quitItemID)?.isEnabled == false, "Quit disables while an update installs")
+        check(detailText(in: menu, id: "desktop.history-status") == installing.historyMessage,
+              "the history result updates inside its fixed frame")
+
+        let progress = MenuBuilder.build(installing, target: target, actions: actions())
+        check(item(in: progress, id: MenuBuilder.installItemID) == nil, "progress replaces the install offer")
+        check(detailText(in: progress, id: "desktop.update-progress") == installing.updateProgress,
+              "update progress is visible")
+        check(item(in: progress, id: MenuBuilder.quitItemID)?.isEnabled == false, "Quit stays disabled during the install")
+
+        var noInstances = input
+        noInstances.running = []
+        noInstances.autoReopenNotice = nil
+        noInstances.historyMessage = nil
+        let quiet = MenuBuilder.build(noInstances, target: target, actions: actions())
+        check(item(in: quiet, id: MenuBuilder.installItemID) == nil,
+              "no install offer while no Claude instance keeps the installer waiting")
+        check(!quiet.items.contains { $0.identifier?.rawValue.hasPrefix("desktop.") == true },
+              "no empty Desktop rows")
+        check(zip(quiet.items, quiet.items.dropFirst()).allSatisfy { !($0.isSeparatorItem && $1.isSeparatorItem) },
+              "no doubled separators")
     }
 
     private func makeInitialInput() -> MenuBuilder.Input {
@@ -151,7 +226,6 @@ private final class MenuRefreshHarness {
             launchAtLogin: .enabled,
             blockedUpdate: nil,
             updateProgress: nil,
-            usage: desktopUsage(profiles: profiles),
             now: now,
             autoReopenNotice: nil,
             codexAccounts: initialCodexAccounts(),
@@ -199,7 +273,6 @@ private final class MenuRefreshHarness {
             launchAtLogin: .enabled,
             blockedUpdate: nil,
             updateProgress: nil,
-            usage: desktopUsage(profiles: profiles),
             now: now,
             autoReopenNotice: nil,
             codexAccounts: updatedCodexAccounts(),
@@ -268,14 +341,6 @@ private final class MenuRefreshHarness {
             fiveHour: five.map { LiveUsageWindow(percent: $0, resetsAt: fiveReset) },
             sevenDay: week.map { LiveUsageWindow(percent: $0, resetsAt: weekReset) }
         )
-    }
-
-    private func desktopUsage(profiles: [Profile]) -> [String: UsageReading] {
-        Dictionary(uniqueKeysWithValues: profiles.enumerated().compactMap { index, profile in
-            let sample = UsageSample(sampledAt: now.addingTimeInterval(-120), org: "fictional-org-\(index)",
-                                     utilization: ["fh": index * 9, "sd": 99 - index * 9])
-            return UsageReading.make(samples: [sample], now: now).map { (profile.id, $0) }
-        })
     }
 
     private func actions() -> MenuBuilder.Actions {
@@ -406,6 +471,6 @@ private struct MenuRefreshMain {
             fputs("FAIL menu refresh regression (\(failures.count) assertions)\n", stderr)
             exit(1)
         }
-        print("PASS menu refresh regression: identities, geometry, usage, states, accessibility, deferred structure")
+        print("PASS menu refresh regression: identities, geometry, usage, states, accessibility, deferred structure, compact menu")
     }
 }
