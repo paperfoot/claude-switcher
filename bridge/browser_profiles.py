@@ -1,30 +1,54 @@
 """Verified account changes across connected Chrome profiles."""
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 try:
-    from . import native_transport, profile_transport, event_log
+    from . import native_transport, profile_transport, event_log, deadlines
 except ImportError:
     import native_transport
     import profile_transport
     import event_log
+    import deadlines
 
 
-def _request(path, command, email=None, sender=None):
+def _send(path, command, email, sender, **options):
     try:
-        result = (sender or native_transport.send_request)(
-            str(path), command, email, timeout=170 if command == 'switch' else 25)
+        result = (sender or native_transport.send_request)(str(path), command, email, **options)
         return result if isinstance(result, dict) else {'ok': False, 'error': 'invalid_browser_result'}
     except (OSError, TimeoutError, ValueError):
         return {'ok': False, 'error': 'host_unavailable'}
 
 
-def _connections(base, exclude=None, sender=None):
+def _status(path, deadline, sender):
+    try:
+        timeout = deadline.timeout(deadlines.STATUS_TIMEOUT)
+    except deadlines.DeadlineExceeded:
+        return {'ok': False, 'error': 'browser_timeout'}
+    return _send(path, 'status', None, sender, timeout=timeout)
+
+
+def _switch(path, email, deadline, sender, restores):
+    """Switch one profile, replying while `restores` changed profiles can still be restored.
+
+    Returns None without contacting the profile when too little time is left.
+    """
+    reserve = restores * deadlines.PROFILE_RESTORE_RESERVE
+    if deadline.remaining(reserve) < deadlines.PROFILE_SWITCH_MINIMUM:
+        return None
+    return _send(path, 'switch', email, sender, deadline=deadline.unix_ms(reserve))
+
+
+def _connections(base, deadline, exclude=None, sender=None):
+    paths = [path for path in profile_transport.connection_paths(base)
+             if exclude is None or path != Path(exclude)]
+    if not paths:
+        return []
+    # One unresponsive profile costs one status timeout, not one per profile.
+    with ThreadPoolExecutor(max_workers=min(8, len(paths))) as executor:
+        states = list(executor.map(lambda path: _status(path, deadline, sender), paths))
     rows = []
-    for path in profile_transport.connection_paths(base):
-        if exclude is not None and path == Path(exclude):
-            continue
-        state = _request(path, 'status', sender=sender)
+    for path, state in zip(paths, states):
         # A killed Chrome/native process can leave a socket behind.
         if state.get('error') == 'host_unavailable':
             continue
@@ -49,13 +73,35 @@ def _summary(rows):
     return result
 
 
-def status(base, sender=None):
-    return _summary(_connections(base, sender=sender))
+def status(base, sender=None, deadline=None):
+    deadline = deadline or deadlines.Deadline(deadlines.STATUS_BUDGET)
+    return _summary(_connections(base, deadline, sender=sender))
 
 
-def switch(base, email, expected_profiles=1, exclude=None, sender=None):
-    """Restore already-changed profiles if another profile rejects the selection."""
-    rows = _connections(base, exclude=exclude, sender=sender)
+def _restore(changed, deadline, sender):
+    """Return the given profiles to their previous logins, newest change first."""
+    restored = True
+    for index, (path, old) in enumerate(reversed(changed)):
+        current = _status(path, deadline, sender)
+        if current.get('ok') and current.get('email') == old.get('email'):
+            continue
+        if not old.get('email'):
+            restored = False
+            continue
+        later = len(changed) - index - 1
+        rollback = _switch(path, old['email'], deadline, sender, later)
+        restored &= bool(rollback and rollback.get('ok') and rollback.get('email') == old['email'])
+    return restored
+
+
+def switch(base, email, expected_profiles=1, exclude=None, sender=None, deadline=None):
+    """Restore already-changed profiles if another profile rejects the selection.
+
+    Every reply is due early enough to restore the profiles changed so far before
+    `deadline`; a profile is not contacted once that is no longer possible.
+    """
+    deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
+    rows = _connections(base, deadline, exclude=exclude, sender=sender)
     previous = _summary(rows)
     if len(rows) < expected_profiles:
         return {**previous, 'ok': False, 'error': 'browser_profiles_missing',
@@ -68,29 +114,26 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None):
     # neither its email nor a rollback target is reliable until that finishes.
     if any(state.get('busy') for _, state in rows):
         return {**previous, 'ok': False, 'error': 'switch_in_progress'}
+    pending = [path for path, before in rows if before.get('email') != email]
     attempted = []
     final = []
     for path, before in rows:
         if before.get('email') == email:
             final.append((path, before))
             continue
-        attempted.append((path, before))
-        result = _request(path, 'switch', email, sender)
-        event_log.emit(base, 'browser_profile_finished', **result)
+        index = pending.index(path)
+        # If a later profile fails, this one must be restored too; the last needs no slot.
+        result = _switch(path, email, deadline, sender, min(index + 1, len(pending) - 1))
+        if result is None:
+            result = {'ok': False, 'error': 'browser_timeout'}
+        else:
+            attempted.append((path, before))
+            event_log.emit(base, 'browser_profile_finished', **result)
         if result.get('ok') and result.get('email') == email:
             final.append((path, {**before, **result}))
             continue
-        restored = True
-        for changed_path, old in reversed(attempted):
-            current = _request(changed_path, 'status', sender=sender)
-            if current.get('ok') and current.get('email') == old.get('email'):
-                continue
-            if not old.get('email'):
-                restored = False
-                continue
-            rollback = _request(changed_path, 'switch', old['email'], sender)
-            restored &= bool(rollback.get('ok') and rollback.get('email') == old['email'])
-        return {**_summary([(p, _request(p, 'status', sender=sender)) for p, _ in rows]),
+        restored = _restore(attempted, deadline, sender)
+        return {**_summary([(p, _status(p, deadline, sender)) for p, _ in rows]),
                 'ok': False, 'error': result.get('error', 'web_identity_mismatch') if restored else 'web_restore_failed',
                 'rolledBack': restored, 'failedConnection': path.name,
                 **{key: result[key] for key in ('failureStep', 'cookieName', 'probeStatus', 'httpStatus') if key in result}}

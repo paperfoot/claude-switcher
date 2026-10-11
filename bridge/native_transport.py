@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import errno
 import json
+import math
 import os
 import selectors
 import socket
@@ -20,7 +21,13 @@ from typing import BinaryIO, Callable
 
 MAX_NATIVE_MESSAGE = 1024 * 1024
 MAX_CLIENT_MESSAGE = 64 * 1024
+# The ladder these bounds belong to is documented in deadlines.py.
 CLIENT_REQUEST_TIMEOUT = 150.0
+# The extension stops starting cookie work this long before the host's reply
+# deadline, which leaves time to restore the previous login.
+BROWSER_ROLLBACK_GRACE = 40.0
+# send_request waits this much past a switch deadline for the host's reply.
+CLIENT_DEADLINE_MARGIN = 2.0
 MAX_ID_LENGTH = 256
 MAX_EMAIL_LENGTH = 320
 MAX_ACTION_LENGTH = 128
@@ -157,7 +164,25 @@ def _bounded_string(value: object, maximum: int) -> bool:
     )
 
 
-def _validate_client_request(message: object) -> tuple[str, str, str | None] | None:
+def _timestamp(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+@dataclass(frozen=True)
+class _ClientRequest:
+    request_id: str
+    command: str
+    email: str | None = None
+    # Unix milliseconds by which the client needs the reply.
+    deadline: float | None = None
+
+
+def _validate_client_request(message: object) -> _ClientRequest | None:
     if not isinstance(message, dict):
         return None
     request_id = message.get("id")
@@ -170,12 +195,15 @@ def _validate_client_request(message: object) -> tuple[str, str, str | None] | N
         email = message.get("email")
         if not _bounded_string(email, MAX_EMAIL_LENGTH):
             return None
-        if set(message) != {"id", "command", "email"}:
+        if not {"id", "command", "email"} <= set(message) <= {"id", "command", "email", "deadline"}:
             return None
-        return request_id, command, email
+        deadline = message.get("deadline")
+        if deadline is not None and not _timestamp(deadline):
+            return None
+        return _ClientRequest(request_id, command, email, deadline)
     if set(message) != {"id", "command"}:
         return None
-    return request_id, command, None
+    return _ClientRequest(request_id, command)
 
 
 @dataclass
@@ -384,15 +412,14 @@ def run_host(
                                         message = json.loads(line.decode("utf-8"))
                                     except (UnicodeDecodeError, json.JSONDecodeError):
                                         message = None
-                                    validated = _validate_client_request(message)
-                                    if validated is None:
+                                    request = _validate_client_request(message)
+                                    if request is None:
                                         queue_result(
                                             client,
                                             {"ok": False, "error": "invalid_request"},
                                         )
                                         continue
-                                    request_id, command, email = validated
-                                    if request_id in pending:
+                                    if request.request_id in pending:
                                         queue_result(
                                             client,
                                             {"ok": False, "error": "duplicate_id"},
@@ -400,17 +427,32 @@ def run_host(
                                         continue
                                     forwarded = {
                                         "type": "command",
-                                        "id": request_id,
-                                        "command": command,
+                                        "id": request.request_id,
+                                        "command": request.command,
                                     }
-                                    if email is not None:
-                                        forwarded["email"] = email
-                                        # Leave time for browser rollback before the caller times out.
-                                        forwarded["expiresAt"] = (time.time() + CLIENT_REQUEST_TIMEOUT - 40) * 1000
+                                    reply_within = CLIENT_REQUEST_TIMEOUT
+                                    if request.command == "switch":
+                                        if request.deadline is not None:
+                                            reply_within = min(
+                                                reply_within,
+                                                request.deadline / 1000 - time.time(),
+                                            )
+                                        if reply_within <= BROWSER_ROLLBACK_GRACE:
+                                            # Too late to switch and still restore: change nothing.
+                                            queue_result(
+                                                client,
+                                                {"ok": False, "error": "browser_timeout"},
+                                            )
+                                            continue
+                                        forwarded["email"] = request.email
+                                        # Leave time for browser rollback before the reply is due.
+                                        forwarded["expiresAt"] = (
+                                            time.time() + reply_within - BROWSER_ROLLBACK_GRACE
+                                        ) * 1000
                                     _write_native(sys.stdout.buffer, forwarded)
-                                    pending[request_id] = (
+                                    pending[request.request_id] = (
                                         client,
-                                        time.monotonic() + CLIENT_REQUEST_TIMEOUT,
+                                        time.monotonic() + reply_within,
                                     )
                     if client.sock not in clients:
                         continue
@@ -460,23 +502,40 @@ def send_request(
     command: str,
     email: str | None = None,
     timeout: float = 50,
+    deadline: float | None = None,
 ) -> dict:
-    """Send one switch/status request to a running host and return its result."""
+    """Send one switch/status request to a running host and return its result.
+
+    `timeout` bounds the whole exchange. A switch may instead carry `deadline`
+    (Unix milliseconds): the host replies by then, and this waits a little longer.
+    """
 
     request_id = os.urandom(16).hex()
-    message: dict[str, str] = {"id": request_id, "command": command}
+    message: dict[str, object] = {"id": request_id, "command": command}
     if email is not None:
         message["email"] = email
+    if deadline is not None:
+        message["deadline"] = deadline
+        timeout = deadline / 1000 - time.time() + CLIENT_DEADLINE_MARGIN
     if _validate_client_request(message) is None:
         raise ValueError("invalid native bridge request")
     payload = json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n"
     response = bytearray()
+    ends = time.monotonic() + timeout
+
+    def wait_budget() -> float:
+        left = ends - time.monotonic()
+        if left <= 0:
+            raise TimeoutError()
+        return left
+
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(timeout)
+            client.settimeout(wait_budget())
             client.connect(socket_path)
             client.sendall(payload)
             while b"\n" not in response:
+                client.settimeout(wait_budget())
                 chunk = client.recv(65536)
                 if not chunk:
                     return {"ok": False, "error": "host_disconnected"}

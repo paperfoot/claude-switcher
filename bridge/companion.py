@@ -11,8 +11,9 @@ import sys
 import tempfile
 import time
 try:
-    from . import event_log
+    from . import deadlines, event_log
 except ImportError:
+    import deadlines
     import event_log
 
 BASE = Path.home() / '.config' / 'claude-switcher'
@@ -94,7 +95,7 @@ def validate_email(email):
     return email.lower()
 
 
-def run_backend(*args, timeout=60):
+def run_backend(*args, timeout=deadlines.CSWAP_TIMEOUT):
     result = subprocess.run([configuration()['cswap'], *args], env=clean_environment(),
                             stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     if result.returncode != 0:
@@ -102,22 +103,36 @@ def run_backend(*args, timeout=60):
     return json.loads(result.stdout)
 
 
-def code_identity():
+def code_identity(timeout=deadlines.IDENTITY_TIMEOUT):
     result = subprocess.run([configuration()['claude'], 'auth', 'status', '--json'], env=clean_environment(),
-                            stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+                            stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     data = json.loads(result.stdout)
     if data.get('loggedIn') and data.get('authMethod') == 'claude.ai':
         return str(data.get('email', '')).lower() or None
     return None
 
 
-def switch_code(email):
+class CodeSwitchNotStarted(Exception):
+    """The deadline left no time to switch Code and still restore it; nothing changed."""
+
+
+def switch_code(email, deadline=None, reserve=0.0):
+    """Switch and verify Code; `reserve` is kept free for restoring the previous login."""
+    deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
     validate_email(email)
-    run_backend('switch', email, '--json')
-    if code_identity() != email:
+    try:
+        timeout = deadline.timeout(deadlines.CSWAP_TIMEOUT, reserve)
+    except deadlines.DeadlineExceeded:
+        raise CodeSwitchNotStarted() from None
+    run_backend('switch', email, '--json', timeout=timeout)
+    if code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT)) != email:
         raise RuntimeError('code_identity_mismatch')
     # cswap deliberately skips writes for an already-active account. A manual login
     # can leave its existing file cache behind even though Keychain is current.
+    # The repair takes up to ~25 s (Keychain, profile lookup, Claude's lock).
+    if deadline.remaining() < deadlines.CACHE_REPAIR_MINIMUM:
+        event_log.emit(BASE, 'native_error', error='code_cache_sync_skipped')
+        return
     refresh_code_cache(email)
 
 
@@ -136,45 +151,48 @@ def refresh_code_cache(email):
         return {'ok': False, 'error': 'code_cache_sync_failed'}
 
 
-def browser_request(command, email=None, expected_profiles=1, exclude=None):
+def browser_request(command, email=None, expected_profiles=1, exclude=None, deadline=None):
     try:
         from . import browser_profiles
     except ImportError:
         import browser_profiles
     if command == 'status':
-        return browser_profiles.status(BASE)
+        return browser_profiles.status(BASE, deadline=deadline)
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(BASE / 'chrome-switch.lock', 'a') as lock:
         os.chmod(lock.name, 0o600)
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
-        result = browser_profiles.switch(BASE, email, expected_profiles, exclude)
+        result = browser_profiles.switch(BASE, email, expected_profiles, exclude, deadline=deadline)
         if result.get('error') == 'browser_profiles_missing' and result.get('profileCount') == 0 and expected_profiles == 1:
             result['error'] = 'browser_missing'
         return result
 
 
-def browser_state():
+def browser_state(deadline=None):
     try:
-        return browser_request('status')
+        return browser_request('status', deadline=deadline)
     except (OSError, TimeoutError, ValueError):
         return {'ok': False, 'error': 'browser_missing', 'accounts': []}
 
 
 @logged_switch('chrome')
-def select_browser(email, expected_profiles=1):
+def select_browser(email, expected_profiles=1, deadline=None):
+    deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(BASE / 'switch.lock', 'a') as lock:
         os.chmod(lock.name, 0o600)
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
-        return browser_request('switch', email, expected_profiles=expected_profiles)
+        return browser_request('switch', email, expected_profiles=expected_profiles, deadline=deadline)
 
 
 @logged_switch('claude')
-def select_account(email, include_browser=True, verified_browser=False):
+def select_account(email, include_browser=True, verified_browser=False, deadline=None):
+    """Switch Code, then Chrome, finishing (including rollback) before `deadline`."""
+    deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(BASE / 'switch.lock', 'a') as lock:
@@ -182,19 +200,30 @@ def select_account(email, include_browser=True, verified_browser=False):
         # Serialise selections across the menu and the extension; fail promptly on contention.
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
-        old = code_identity()
         try:
-            switch_code(email)
+            identity_timeout = deadline.timeout(deadlines.IDENTITY_TIMEOUT, deadlines.CODE_RESTORE_RESERVE)
+        except deadlines.DeadlineExceeded:
+            return {'ok': False, 'error': 'code_switch_failed'}
+        old = code_identity(timeout=identity_timeout)
+        try:
+            switch_code(email, deadline, reserve=deadlines.CODE_RESTORE_RESERVE)
+        except CodeSwitchNotStarted:
+            return {'ok': False, 'error': 'code_switch_failed'}
         except Exception:
             # cswap rolls back failed writes; verify/repair if activation failed after a write.
             if old and old != email:
-                try: switch_code(old)
-                except Exception: return {'ok': False, 'error': 'code_restore_failed'}
+                try:
+                    switch_code(old, deadline)
+                except Exception:
+                    return {'ok': False, 'error': 'code_restore_failed'}
             return {'ok': False, 'error': 'code_switch_failed'}
         web = {'ok': True, 'email': email} if verified_browser else {'ok': False, 'error': 'browser_missing'}
         if include_browser:
             try:
-                web = browser_request('switch', email, expected_profiles=0, exclude=SOCKET) if verified_browser else browser_request('switch', email)
+                if verified_browser:
+                    web = browser_request('switch', email, expected_profiles=0, exclude=SOCKET, deadline=deadline)
+                else:
+                    web = browser_request('switch', email, deadline=deadline)
             except FileNotFoundError: pass
             except (OSError, TimeoutError, ValueError):
                 web = {'ok': False, 'error': 'web_unavailable'}
@@ -215,12 +244,13 @@ def select_account(email, include_browser=True, verified_browser=False):
         return result
 
 
-def snapshot():
-    data = run_backend('list', '--json')
+def snapshot(deadline=None):
+    deadline = deadline or deadlines.Deadline(deadlines.STATUS_BUDGET)
+    data = run_backend('list', '--json', timeout=deadline.timeout(deadlines.CSWAP_TIMEOUT))
     # Account and usage metadata only. Secret values never cross this interface.
     state = read_state()
-    data['codeEmail'] = code_identity()
-    data['browser'] = browser_state()
+    data['codeEmail'] = code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT))
+    data['browser'] = browser_state(deadline)
     data['lastSwitch'] = state
     return data
 
@@ -280,7 +310,11 @@ def handle_native(message):
             return {'ok': True}
         if action == 'select':
             # The initiating profile is waiting for this reply; contact only the other hosts.
-            return select_account(message.get('email'), verified_browser=True)
+            # Finish before the popup gives up and restores its own cookies. Popups
+            # older than 0.8.0 send no deadline and wait 120 s.
+            deadline = deadlines.Deadline.from_unix_ms(message.get('deadline'), deadlines.POPUP_BUDGET)
+            return select_account(message.get('email'), verified_browser=True,
+                                  deadline=deadline or deadlines.Deadline(deadlines.LEGACY_POPUP_BUDGET))
         return {'ok': False, 'error': 'unknown_action'}
     except Exception:
         event_log.emit(BASE, 'native_error', error='keychain_error' if action in ('vault_get', 'vault_put') else 'backend_unavailable')
@@ -304,7 +338,7 @@ def main():
         elif command == 'logs':
             result = {'ok': True, 'path': str(BASE / 'events.jsonl'), 'events': event_log.recent(BASE)}
         elif command == 'browser-status':
-            result = browser_state()
+            result = browser_state(deadlines.Deadline(deadlines.STATUS_BUDGET))
         elif command == 'browser-switch':
             import argparse
             parser = argparse.ArgumentParser()
@@ -312,9 +346,15 @@ def main():
             parser.add_argument('--expect-profiles', type=int, default=1)
             args = parser.parse_args(sys.argv[2:])
             if args.expect_profiles < 1: parser.error('--expect-profiles must be at least 1')
-            result = select_browser(args.email, expected_profiles=args.expect_profiles)
+            result = select_browser(args.email, expected_profiles=args.expect_profiles,
+                                    deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
+        elif command == 'snapshot':
+            result = snapshot(deadlines.Deadline(deadlines.STATUS_BUDGET))
+        elif command == 'switch':
+            # The menu app kills this helper after 350 s; finish well before that.
+            result = select_account(sys.argv[2], deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
         else:
-            result = snapshot() if command == 'snapshot' else select_account(sys.argv[2]) if command == 'switch' else {'ok': False, 'error': 'unknown_action'}
+            result = {'ok': False, 'error': 'unknown_action'}
     except Exception:
         event_log.emit(BASE, 'native_error', error='backend_unavailable')
         result = {'ok': False, 'error': 'Backend unavailable. Open Settings → Set up switching.'}
