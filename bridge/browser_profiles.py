@@ -36,7 +36,7 @@ def _connections(base, exclude=None, sender=None):
 
 def _summary(rows):
     profiles = [dict(connection=path.name, **{key: state[key] for key in
-                ('ok', 'email', 'error', 'version', 'lastHealthCheckAt', 'lastSessionSavedAt') if key in state}) for path, state in rows]
+                ('ok', 'email', 'error', 'busy', 'version', 'lastHealthCheckAt', 'lastSessionSavedAt') if key in state}) for path, state in rows]
     emails = {state.get('email') for _, state in rows}
     ok = bool(rows) and all(state.get('ok') for _, state in rows)
     result = {'ok': ok, 'email': next(iter(emails)) if ok and len(emails) == 1 else None,
@@ -64,6 +64,10 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None):
         return {'ok': True, 'email': email, 'profiles': [], 'profileCount': 0}
     if not previous['ok']:
         return previous
+    # A busy profile reports its last committed login while another switch runs;
+    # neither its email nor a rollback target is reliable until that finishes.
+    if any(state.get('busy') for _, state in rows):
+        return {**previous, 'ok': False, 'error': 'switch_in_progress'}
     attempted = []
     final = []
     for path, before in rows:

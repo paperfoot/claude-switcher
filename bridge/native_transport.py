@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import errno
 import json
 import os
@@ -10,6 +11,7 @@ import socket
 import stat
 import struct
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +24,12 @@ CLIENT_REQUEST_TIMEOUT = 150.0
 MAX_ID_LENGTH = 256
 MAX_EMAIL_LENGTH = 320
 MAX_ACTION_LENGTH = 128
+# Browser-initiated requests run on worker threads so a long `select` cannot stop
+# the loop from relaying status requests. The cap bounds memory and threads.
+MAX_LOCAL_REQUESTS = 16
+# After Chrome closes stdin, in-flight handlers may finish their transaction
+# (a popup `select` is bounded by its own deadline) before the host exits.
+LOCAL_SHUTDOWN_GRACE = 180.0
 
 
 class ProtocolError(Exception):
@@ -59,14 +67,85 @@ class _NativeFrameParser:
         return messages
 
 
-def _write_native(stream: BinaryIO, message: dict) -> None:
+def _encode_native(message: dict) -> bytes:
     payload = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8"
     )
     if len(payload) > MAX_NATIVE_MESSAGE:
         raise ProtocolError("native response too large")
-    stream.write(struct.pack("<I", len(payload)) + payload)
+    return struct.pack("<I", len(payload)) + payload
+
+
+def _write_native(stream: BinaryIO, message: dict) -> None:
+    stream.write(_encode_native(message))
     stream.flush()
+
+
+class _LocalWorkers:
+    """Run browser-initiated requests off the selector loop.
+
+    Workers never touch stdout. They queue results and wake the loop through a
+    socket pair, so the loop thread alone owns native framing and ordering.
+    """
+
+    def __init__(self, handle_local: Callable[[dict], dict], limit: int) -> None:
+        self.handle_local = handle_local
+        self.limit = limit
+        self.active = 0
+        self.lock = threading.Lock()
+        self.results: collections.deque[tuple[str, dict]] = collections.deque()
+        self.threads: set[threading.Thread] = set()
+        self.wake_reader, self.wake_writer = socket.socketpair()
+        self.wake_reader.setblocking(False)
+        self.wake_writer.setblocking(False)
+
+    def submit(self, request_id: str, message: dict) -> bool:
+        with self.lock:
+            if self.active >= self.limit:
+                return False
+            self.active += 1
+        self.threads = {thread for thread in self.threads if thread.is_alive()}
+        thread = threading.Thread(
+            target=self._run, args=(request_id, message), daemon=True
+        )
+        self.threads.add(thread)
+        thread.start()
+        return True
+
+    def _run(self, request_id: str, message: dict) -> None:
+        try:
+            result = self.handle_local(message)
+            if not isinstance(result, dict):
+                raise TypeError("local handler did not return an object")
+        except Exception:
+            result = {"ok": False, "error": "local_handler_error"}
+        with self.lock:
+            self.results.append((request_id, result))
+            self.active -= 1
+        try:
+            self.wake_writer.send(b"\0")
+        except OSError:
+            # A full buffer already holds a wake byte; a closed one means shutdown.
+            pass
+
+    def drain(self) -> list[tuple[str, dict]]:
+        while True:
+            try:
+                if not self.wake_reader.recv(4096):
+                    break
+            except (BlockingIOError, InterruptedError):
+                break
+        with self.lock:
+            ready = list(self.results)
+            self.results.clear()
+        return ready
+
+    def close(self, grace: float) -> None:
+        deadline = time.monotonic() + grace
+        for thread in list(self.threads):
+            thread.join(max(0.0, deadline - time.monotonic()))
+        self.wake_reader.close()
+        self.wake_writer.close()
 
 
 def _bounded_string(value: object, maximum: int) -> bool:
@@ -168,9 +247,11 @@ def run_host(
         print("native bridge: disallowed origin", file=sys.stderr)
         return 1
 
+    workers = _LocalWorkers(handle_local, MAX_LOCAL_REQUESTS)
     try:
         listener = _prepare_listener(socket_path)
     except (OSError, RuntimeError):
+        workers.close(0)
         print("native bridge: unavailable socket", file=sys.stderr)
         return 1
 
@@ -179,6 +260,20 @@ def run_host(
     pending: dict[str, tuple[_Client, float]] = {}
     parser = _NativeFrameParser()
     stdin_fd = sys.stdin.buffer.fileno()
+
+    def write_response(request_id: str, result: dict) -> None:
+        try:
+            frame = _encode_native({"type": "response", "id": request_id, "result": result})
+        except ProtocolError:
+            frame = _encode_native(
+                {
+                    "type": "response",
+                    "id": request_id,
+                    "result": {"ok": False, "error": "response_too_large"},
+                }
+            )
+        sys.stdout.buffer.write(frame)
+        sys.stdout.buffer.flush()
 
     def close_client(client: _Client) -> None:
         clients.pop(client.sock, None)
@@ -217,20 +312,14 @@ def run_host(
             and _bounded_string(request_id, MAX_ID_LENGTH)
             and _bounded_string(message.get("action"), MAX_ACTION_LENGTH)
         ):
-            try:
-                result = handle_local(message)
-                if not isinstance(result, dict):
-                    raise TypeError("local handler did not return an object")
-            except Exception:
-                result = {"ok": False, "error": "local_handler_error"}
-            _write_native(
-                sys.stdout.buffer,
-                {"type": "response", "id": request_id, "result": result},
-            )
+            # Handlers such as `select` can run for minutes; the loop keeps relaying.
+            if not workers.submit(request_id, message):
+                write_response(request_id, {"ok": False, "error": "host_busy"})
 
     try:
         selector.register(stdin_fd, selectors.EVENT_READ, "stdin")
         selector.register(listener, selectors.EVENT_READ, "listener")
+        selector.register(workers.wake_reader, selectors.EVENT_READ, "wake")
         while True:
             now = time.monotonic()
             nearest = min((deadline for _, deadline in pending.values()), default=now + 30.0)
@@ -246,6 +335,9 @@ def run_host(
                             handle_browser_message(message)
                     except ProtocolError:
                         return 1
+                elif key.data == "wake":
+                    for request_id, result in workers.drain():
+                        write_response(request_id, result)
                 elif key.data == "listener":
                     while True:
                         try:
@@ -351,13 +443,16 @@ def run_host(
         except (KeyError, ValueError):
             pass
         listener.close()
-        selector.close()
         try:
             info = os.lstat(socket_path)
             if stat.S_ISSOCK(info.st_mode) and info.st_uid == os.geteuid():
                 os.unlink(socket_path)
         except FileNotFoundError:
             pass
+        # No new work is accepted now. Let a running switch finish its rollback or
+        # state write instead of abandoning it halfway; its reply has no reader.
+        workers.close(LOCAL_SHUTDOWN_GRACE)
+        selector.close()
 
 
 def send_request(
