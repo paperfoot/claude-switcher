@@ -9,7 +9,8 @@ final class MenuDetailView: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: UsageBarView.preferredWidth, height: height))
         autoresizingMask = [.width]
         label.font = section ? .systemFont(ofSize: 12, weight: .medium) : .menuFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
+        // Matches the usage rows; `secondaryLabelColor` washes out on the translucent menu.
+        label.textColor = UsageBarView.mutedTextColor
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
         // NSTextField adds a 2-point text inset inside its borderless cell.

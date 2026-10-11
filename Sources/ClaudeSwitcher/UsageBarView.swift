@@ -22,12 +22,28 @@ final class UsageBarView: NSView {
     /// profile label above them.
     static let titleInset: CGFloat = 30
     static let preferredWidth: CGFloat = 407
-    private static let rightInset: CGFloat = 14
+    /// Labels, separators and reset times. `secondaryLabelColor` washes out on the
+    /// translucent menu.
+    static let mutedTextColor = neutralColor(alpha: 0.75)
+
+    // A column is its label, then fixed gauge, number and reset widths; whatever is left
+    // separates the two columns. At the preferred width "~100%" and the widest reset,
+    // "↻ Wed 04:44", fit in both columns.
+    private static let rightInset: CGFloat = 12
     private static let rowHeight: CGFloat = 22
-    private static let labelWidth: CGFloat = 36
-    private static let barWidth: CGFloat = 22
-    private static let barHeight: CGFloat = 9
-    private static let percentWidth: CGFloat = 36
+    private static let minimumColumnGap: CGFloat = 14
+    private static let labelGap: CGFloat = 5
+    private static let barWidth: CGFloat = 26
+    private static let barHeight: CGFloat = 10
+    private static let barGap: CGFloat = 6
+    private static let percentWidth: CGFloat = 44
+    private static let trailingWidth: CGFloat = 69
+    /// Text in every column shares one baseline, placed so the digits centre on the gauge.
+    private static let baseline: CGFloat = 7
+    /// Every gauge uses the same alphas, whatever its level or the reading's age.
+    private static let trackAlpha: CGFloat = 0.2
+    private static let outlineAlpha: CGFloat = 0.55
+    private static let unknownTrackColor = neutralColor(alpha: 0.12)
 
     private(set) var rows: [Row]
 
@@ -49,59 +65,78 @@ final class UsageBarView: NSView {
     override var allowsVibrancy: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
-        let font = NSFont.menuFont(ofSize: 11)
-        let label: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        let note: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 10.5), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph]
+        let labelFont = NSFont.menuFont(ofSize: 11)
+        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        let noteFont = NSFont.menuFont(ofSize: 10.5)
+        let label: [NSAttributedString.Key: Any] = [.font: labelFont, .foregroundColor: Self.mutedTextColor]
+        let note: [NSAttributedString.Key: Any] = [.font: noteFont, .foregroundColor: Self.mutedTextColor]
 
         let visible = Array(rows.prefix(2))
-        let availableWidth = bounds.width - Self.titleInset - Self.rightInset
-        let columnWidth = (availableWidth - 22) / 2
+        let labelWidths = visible.map { ceil(($0.label as NSString).size(withAttributes: label).width) + Self.labelGap }
+        let fixedWidth = Self.barWidth + Self.barGap + Self.percentWidth + Self.trailingWidth
+        let used = labelWidths.reduce(0, +) + CGFloat(visible.count) * fixedWidth
+        let gap = max(Self.minimumColumnGap, bounds.width - Self.titleInset - Self.rightInset - used)
+        var start = Self.titleInset
         for (index, row) in visible.enumerated() {
-            // Colour always follows the level; only an unknown value is neutral.
-            let tint = row.percent == nil ? NSColor.secondaryLabelColor : Self.color(for: row.level)
-            let number: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: tint]
-            let top: CGFloat = 0
-            let baseline = (Self.rowHeight - font.capHeight) / 2 - 1
-            let start = Self.titleInset + CGFloat(index) * (columnWidth + 22)
-            var x = start
             if index == 1 {
-                ("|" as NSString).draw(at: NSPoint(x: start - 14, y: baseline), withAttributes: label)
+                let bar = "|" as NSString
+                let x = start - (gap + bar.size(withAttributes: label).width) / 2
+                bar.draw(at: NSPoint(x: x, y: Self.baseline + labelFont.descender), withAttributes: label)
             }
-            (row.label as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: label)
-            x += Self.labelWidth
+            var x = start
+            (row.label as NSString).draw(at: NSPoint(x: x, y: Self.baseline + labelFont.descender), withAttributes: label)
+            x += labelWidths[index]
 
-            let track = NSRect(x: x, y: top + (Self.rowHeight - Self.barHeight) / 2, width: Self.barWidth, height: Self.barHeight)
-            // A small rounded gauge. Fill and percentage both mean usage consumed.
-            tint.withAlphaComponent(0.7).setStroke()
-            let outline = NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2)
-            outline.lineWidth = 0.8
-            outline.stroke()
-            if let percent = row.percent, percent > 0 {
-                let inner = track.insetBy(dx: 1.5, dy: 1.5)
-                let fill = NSRect(x: inner.minX, y: inner.minY,
-                                  width: max(1, inner.width * CGFloat(min(percent, 100)) / 100),
-                                  height: inner.height)
-                tint.setFill()
-                NSBezierPath(roundedRect: fill, xRadius: 1, yRadius: 1).fill()
-            }
-            x += Self.barWidth + 10
+            let color = Self.color(for: row.level)
+            let track = NSRect(x: x, y: (Self.rowHeight - Self.barHeight) / 2, width: Self.barWidth, height: Self.barHeight)
+            Self.drawGauge(in: track, percent: row.percent, color: color)
+            x += Self.barWidth + Self.barGap
 
             let text = row.percent.map { (row.isStale ? "~" : "") + "\($0)%" } ?? "\u{2014}"
-            (text as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: number)
+            let number: [NSAttributedString.Key: Any] = [
+                .font: numberFont,
+                .foregroundColor: row.percent == nil ? Self.mutedTextColor : color,
+            ]
+            (text as NSString).draw(at: NSPoint(x: x, y: Self.baseline + numberFont.descender), withAttributes: number)
             x += Self.percentWidth
 
             if let trailing = row.trailing {
-                let available = start + columnWidth - x
+                // The last column may use the slack; a narrower view clips instead of overlapping.
+                let end = index == visible.count - 1 ? bounds.width - Self.rightInset : x + Self.trailingWidth
+                let available = end - x
                 if available > 20 {
                     NSGraphicsContext.saveGraphicsState()
                     NSBezierPath(rect: NSRect(x: x, y: 0, width: available, height: bounds.height)).addClip()
-                    (trailing as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: note)
+                    (trailing as NSString).draw(at: NSPoint(x: x, y: Self.baseline + noteFont.descender), withAttributes: note)
                     NSGraphicsContext.restoreGraphicsState()
                 }
             }
+            start += labelWidths[index] + fixedWidth + gap
         }
+    }
+
+    /// One anatomy for every known value: a track tinted with the level colour, a thin
+    /// outline, and the used portion at full strength. An unknown value keeps only a
+    /// neutral track. Fill and percentage both mean usage consumed.
+    private static func drawGauge(in track: NSRect, percent: Int?, color: NSColor) {
+        let shape = NSBezierPath(roundedRect: track, xRadius: 3, yRadius: 3)
+        guard let percent else {
+            unknownTrackColor.setFill()
+            shape.fill()
+            return
+        }
+        color.withAlphaComponent(trackAlpha).setFill()
+        shape.fill()
+        let outline = NSBezierPath(roundedRect: track.insetBy(dx: 0.5, dy: 0.5), xRadius: 2.5, yRadius: 2.5)
+        outline.lineWidth = 1
+        color.withAlphaComponent(outlineAlpha).setStroke()
+        outline.stroke()
+        guard percent > 0 else { return }
+        let inner = track.insetBy(dx: 2, dy: 2)
+        let used = NSRect(x: inner.minX, y: inner.minY,
+                          width: max(1, inner.width * CGFloat(min(percent, 100)) / 100), height: inner.height)
+        color.setFill()
+        NSBezierPath(roundedRect: used, xRadius: 1.5, yRadius: 1.5).fill()
     }
 
     private static func color(for level: UsageLevel) -> NSColor {
@@ -121,6 +156,14 @@ final class UsageBarView: NSView {
         NSColor(name: nil) { appearance in
             let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
             return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+        }
+    }
+
+    /// Black or white at a fixed alpha, like `labelColor`. `withAlphaComponent` on a system
+    /// colour resolves it once, for whichever appearance is current at that moment.
+    private static func neutralColor(alpha: CGFloat) -> NSColor {
+        NSColor(name: nil) { appearance in
+            NSColor(white: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 1 : 0, alpha: alpha)
         }
     }
 }
