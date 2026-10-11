@@ -1,5 +1,8 @@
-import {SessionSwitcher, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
+import {SessionSwitcher, SelectionMemory, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
 const HOST = 'org.paperfoot.claude_switcher';
+// A catch-up switch has no waiting caller; bound it like a menu switch.
+const CATCH_UP_MS = 120_000;
+let catchUpDue = false;
 let port;
 let connectionError = 'Open Claude Switcher to connect';
 let popupSwitchInProgress = false;
@@ -86,18 +89,69 @@ const vault={
   async list(){return (await native('vault_list')).accounts||[];}
 };
 const switcher=new SessionSwitcher(browser,vault,probe);
-async function saveCurrentSession() {
-  if(sessionSaveInFlight)return sessionSaveInFlight;
-  sessionSaveInFlight=switcher.save();
+async function digest(text) {
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+const SELECTION_KEY = 'selection';
+const selections = new SelectionMemory({
+  get: async () => (await chrome.storage.local.get(SELECTION_KEY))[SELECTION_KEY],
+  set: value => chrome.storage.local.set({[SELECTION_KEY]: value}),
+}, digest);
+function saveCurrentSession() {
+  sessionSaveInFlight ??= (async () => {
+    try {
+      const result = await switcher.save();
+      lastSessionSavedAt = Date.now();
+      knownStatus = {...knownStatus, email: result.email};
+      // Notices a sign-in this companion did not make before any catch-up runs.
+      await selections.observed(result.email).catch(() => {});
+      return result;
+    } catch (error) {
+      report({error: 'session_save_failed', failureStep: 'save_session', ...probe.diagnostic});
+      throw error;
+    } finally {
+      sessionSaveInFlight = null;
+    }
+  })();
+  return sessionSaveInFlight;
+}
+// A selection made while this profile was closed, or one it failed to keep,
+// takes effect when it reconnects. One the user overrode afterwards, by signing
+// in to another account or by a Chrome-only switch, never does.
+async function catchUp() {
+  const {email, selectedAt} = await native('pending_selection', {perProfile: true});
+  if (!email || !Number.isFinite(selectedAt)) return;
+  if (selectedAt < (await selections.current()).appliedAt) return;
+  // A sign-in since the last save counts too, even if that save failed.
+  const current = await switcher.identity();
+  if (current) await selections.observed(current);
+  const {appliedAt} = await selections.current();
+  if (selectedAt < appliedAt) return;
+  // An equal stamp means this profile applied the selection once, then was rolled
+  // back because another profile failed, or was signed out; a manual sign-in
+  // would have moved appliedAt past it.
+  if (current === email) {
+    if (selectedAt > appliedAt) await selections.switched(email, selectedAt);
+    return;
+  }
+  const result = await switcher.switchTo(email, null, Date.now() + CATCH_UP_MS);
+  if (!result.ok) {
+    report(result);
+    return;
+  }
+  await selections.switched(email, selectedAt);
+  knownStatus = {...knownStatus, email};
+  void native('browser_ready', {email, selectedAt}).catch(() => {});
+}
+async function runCatchUp() {
+  catchUpDue = false;
   try {
-    const result=await sessionSaveInFlight;
-    lastSessionSavedAt=Date.now();
-    knownStatus={...knownStatus,email:result.email};
-    return result;
-  } catch(error) {
-    report({error:'session_save_failed',failureStep:'save_session',...probe.diagnostic});
-    throw error;
-  } finally {sessionSaveInFlight=null;}
+    await catchUp();
+  } catch {
+    // For example, a switch was still running when this profile connected.
+    catchUpDue = true;
+  }
 }
 async function maintainConnection() {
   if(healthCheckRunning || popupSwitchInProgress || incomingCommands || requests.size)return;
@@ -107,6 +161,7 @@ async function maintainConnection() {
     await native('ping',{},5000);
     lastHealthCheckAt=Date.now();
     if(Date.now()-lastSessionSavedAt>=5*60*1000)await saveCurrentSession().catch(()=>{});
+    if (catchUpDue) await runCatchUp();
   } catch {
     if(port===previous && previous && !popupSwitchInProgress && !incomingCommands && !requests.size) {
       port=null;
@@ -127,7 +182,11 @@ async function handleCommand(message) {
     commandSwitches++;
     try {
       const result = await switcher.switchTo(message.email, null, message.expiresAt);
-      if (result.ok) knownStatus = {...knownStatus, email: result.email};
+      if (result.ok) {
+        knownStatus = {...knownStatus, email: result.email};
+        // Rollbacks carry no selectedAt and leave a missed selection pending.
+        await selections.switched(result.email, message.selectedAt).catch(() => {});
+      }
       return result;
     } finally {
       commandSwitches--;
@@ -177,15 +236,10 @@ function connect() {
     });
     // Initial setup and manual re-logins are captured without another popup click.
     // The native vault only accepts the accounts configured in the menu app.
-    void (async()=>{
-      await saveCurrentSession().catch(()=>{});
-      // A selection made while Chrome was closed takes effect when Chrome reconnects.
-      const pending=await native('pending_selection');
-      if(pending.email) {
-        const result=await switcher.switchTo(pending.email);
-        if(result.ok)await native('browser_ready',{email:pending.email});
-      }
-    })().catch(()=>{});
+    void (async () => {
+      await saveCurrentSession().catch(() => {});
+      await runCatchUp();
+    })();
   } catch { port=null; }
 }
 chrome.runtime.onMessage.addListener((msg,sender,send)=>{
@@ -195,16 +249,29 @@ chrome.runtime.onMessage.addListener((msg,sender,send)=>{
     if(popupSwitchInProgress)return {ok:false,error:'switch_in_progress'};
     popupSwitchInProgress=true;
     try{
-      const activateCode = email => native('select', {email, deadline: Date.now() + SELECT_BUDGET_MS}, SELECT_REPLY_MS);
+      let activation;
+      const activateCode = async email => {
+        activation = await native('select', {email, deadline: Date.now() + SELECT_BUDGET_MS}, SELECT_REPLY_MS);
+        return activation;
+      };
       const result=await switcher.switchTo(msg.email,activateCode);
-      if(result.ok || result.partial)knownStatus={...knownStatus,email:result.email};
+      if (result.ok || result.partial) {
+        knownStatus = {...knownStatus, email: result.email};
+        // This profile already shows the selection; a reconnect must not re-apply it.
+        await selections.switched(result.email, activation?.selectedAt).catch(() => {});
+      }
       if(result.ok===false)report(result);
       if(result.ok || result.partial)void saveCurrentSession().catch(()=>{});
       return result;
     }
     finally{popupSwitchInProgress=false;}
   };
-  const work=action==='save'?saveCurrentSession():action==='newLogin'?switcher.newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(new Error('Unknown action'));
+  const newLogin = async () => {
+    // The account the user signs in to next must not be undone by an older selection.
+    await selections.manualLogin().catch(() => {});
+    return switcher.newLogin();
+  };
+  const work=action==='save'?saveCurrentSession():action==='newLogin'?newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(new Error('Unknown action'));
   work.then(result=>send(result)).catch(error=>send({ok:false,error:error.message})); return true;
 });
 let saveTimer;

@@ -35,6 +35,64 @@ export function identityFrom(data) {
   return email ? emailKey(email) : null;
 }
 
+// What one Chrome profile remembers about Code selections, so it adopts a
+// selection it missed and never undoes a login chosen afterwards.
+//   appliedAt  newest selection (Unix seconds) this profile performed or adopted,
+//              or the time of a later manual sign-in; older selections never apply
+//   identity   digest of the login it last switched to or saw, never the email
+// Updates run one at a time, so a switch is recorded before a later save compares.
+export class SelectionMemory {
+  constructor(storage, digest, now = () => Date.now() / 1000) {
+    this.storage = storage; this.digest = digest; this.now = now;
+    this.record = null;
+    this.queue = Promise.resolve();
+  }
+  update(change) {
+    const result = this.queue.then(async () => {
+      this.record ??= await this.load();
+      const next = await change(this.record);
+      if (next) {
+        this.record = next;
+        await this.storage.set(next).catch(() => {});
+      }
+      return this.record;
+    });
+    this.queue = result.catch(() => {});
+    return result;
+  }
+  async load() {
+    const stored = await this.storage.get().catch(() => null);
+    if (Number.isFinite(stored?.appliedAt) && (stored.identity === null || typeof stored.identity === 'string')) return stored;
+    // A first run adopts no earlier selection; it starts from the login it finds.
+    const fresh = {appliedAt: this.now(), identity: null};
+    await this.storage.set(fresh).catch(() => {});
+    return fresh;
+  }
+  current() {
+    return this.update(() => null);
+  }
+  // This profile switched to `email`; `selectedAt` is absent for rollbacks.
+  switched(email, selectedAt) {
+    return this.update(async record => ({
+      appliedAt: Number.isFinite(selectedAt) ? Math.max(record.appliedAt, selectedAt) : record.appliedAt,
+      identity: await this.digest(emailKey(email)),
+    }));
+  }
+  // A verified login was saved. One the companion did not switch to is the user's choice.
+  observed(email) {
+    return this.update(async record => {
+      const identity = await this.digest(emailKey(email));
+      if (record.identity === identity) return null;
+      const manual = record.identity !== null;
+      return {appliedAt: manual ? Math.max(record.appliedAt, this.now()) : record.appliedAt, identity};
+    });
+  }
+  // "Add another account": whatever the user signs in to next wins over older selections.
+  manualLogin() {
+    return this.update(record => ({appliedAt: Math.max(record.appliedAt, this.now()), identity: null}));
+  }
+}
+
 export class SessionSwitcher {
   constructor(browser, vault, probe) {
     this.browser = browser; this.vault = vault; this.probe = probe;
@@ -66,6 +124,8 @@ export class SessionSwitcher {
     return {ok:true};
   }); }
   status() { return this.serialize(async () => ({ok:true,email:await this.probe(),accounts:await this.vault.list()})); }
+  // The current login, never observed halfway through a switch.
+  identity() { return this.serialize(() => this.probe()); }
   switchTo(email, activateCode = null, expiresAt = Infinity) { return this.serialize(async () => {
     const expired = () => Date.now() >= expiresAt;
     if (expired()) return {ok:false,error:'browser_timeout',email};
