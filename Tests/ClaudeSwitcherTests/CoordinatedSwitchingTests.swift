@@ -27,4 +27,88 @@ struct CoordinatedSwitchingTests {
         #expect(result.codeEmail == "one@example.com")
         #expect(result.summary == "Code switched · Chrome is not responding")
     }
+
+    private func result(_ json: String) throws -> CoordinatedResult {
+        try JSONDecoder().decode(CoordinatedResult.self, from: Data(json.utf8))
+    }
+
+    @Test func codeSwitchedSeparatesAmberFromRed() throws {
+        #expect(try result(#"{"ok":true,"codeEmail":"one@example.com","browserReady":true}"#).codeSwitched)
+        let partial = try result(#"{"ok":false,"partial":true,"codeEmail":"one@example.com","error":"code_only_after_web_failure","browserError":"web_switch_failed"}"#)
+        #expect(partial.codeSwitched)
+        #expect(partial.ok == false)
+        #expect(try !result(#"{"ok":false,"partial":true,"error":"code_only_after_web_failure"}"#).codeSwitched)
+        #expect(try !result(#"{"ok":false,"error":"code_switch_failed"}"#).codeSwitched)
+        #expect(try !result(#"{"ok":false,"error":"keychain_unavailable","message":"Unlock your Keychain"}"#).codeSwitched)
+    }
+
+    @Test func errorCodesHaveSpecificSummaries() throws {
+        let cases = [
+            (#"{"ok":false,"error":"keychain_unavailable","message":"Account could not be saved or opened."}"#, "Keychain is locked · unlock it and try again"),
+            (#"{"ok":false,"error":"backend_unavailable","message":"Backend unavailable."}"#, "Switching needs setup · open Settings"),
+            (#"{"ok":false,"error":"unknown_account"}"#, "This account is not set up for switching"),
+            (#"{"ok":false,"partial":true,"codeEmail":"a@example.com","error":"code_only_after_web_failure","browserError":"browser_timeout"}"#, "Code switched · Chrome took too long"),
+            (#"{"ok":false,"partial":true,"codeEmail":"a@example.com","error":"code_only_after_web_failure","browserError":"switch_in_progress"}"#, "Code switched · Chrome is busy"),
+            (#"{"ok":false,"error":"Backend unavailable. Open Settings → Set up switching."}"#, "Could not switch accounts · try again"),
+        ]
+        for (json, summary) in cases {
+            #expect(try result(json).summary == summary)
+        }
+    }
+
+    private func fakeHelper(_ body: String) throws -> (CoordinatedSetup, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("coordinated-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let script = directory.appendingPathComponent("helper.sh")
+        try Data(body.utf8).write(to: script)
+        return (CoordinatedSetup(enabled: true, python: "/bin/sh", helper: script.path, cswap: "/usr/bin/false"), directory)
+    }
+
+    @Test func unreadableOutputThrowsWithABoundedStderrTail() throws {
+        let (setup, directory) = try fakeHelper("""
+        i=0; while [ $i -lt 300 ]; do printf 'early-line-%04d\\n' $i >&2; i=$((i+1)); done
+        echo 'Traceback: final failure line' >&2
+        echo 'not json'
+        exit 3
+        """)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            _ = try CoordinatedSwitching.select(email: "one@example.com", setup: setup)
+            Issue.record("unreadable output must throw")
+        } catch let error as CoordinatedHelperError {
+            #expect(error.description.contains("exit 3"))
+            #expect(error.description.contains("Traceback: final failure line"))
+            #expect(!error.description.contains("early-line-0000"))
+            #expect(error.stderrTail.utf8.count <= CoordinatedSwitching.stderrTailLimit)
+        }
+    }
+
+    @Test func validOutputStillDecodesWhileStderrIsKeptAside() throws {
+        let (setup, directory) = try fakeHelper("""
+        echo 'warning: noisy helper' >&2
+        echo '{"ok":false,"partial":true,"codeEmail":"one@example.com","error":"code_only_after_web_failure"}'
+        exit 1
+        """)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let result = try CoordinatedSwitching.select(email: "one@example.com", setup: setup)
+        #expect(result.codeSwitched)
+        #expect(result.summary == "Code switched · Chrome could not switch")
+    }
+
+    @Test func aHungHelperIsStoppedWithItsStderrTail() throws {
+        let (setup, directory) = try fakeHelper("""
+        echo 'still waiting for cswap' >&2
+        sleep 30
+        """)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let started = Date()
+        do {
+            _ = try CoordinatedSwitching.run(setup: setup, arguments: ["switch", "one@example.com"], timeout: 0.5)
+            Issue.record("a hung helper must time out")
+        } catch let error as CoordinatedHelperError {
+            #expect(error.description.contains("timed out"))
+            #expect(error.stderrTail == "still waiting for cswap")
+        }
+        #expect(Date().timeIntervalSince(started) < 5)
+    }
 }
