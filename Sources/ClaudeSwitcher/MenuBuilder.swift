@@ -9,6 +9,8 @@ enum MenuBuilder {
 
     // MARK: - Inputs
 
+    /// The menu shows accounts, usage, the palette and Quit. Selectors for actions that moved
+    /// to the command palette stay, so the app's wiring is unchanged.
     struct Actions: Sendable {
         var selectProfile: Selector
         var copyTerminalCommand: Selector
@@ -31,6 +33,7 @@ enum MenuBuilder {
         var toggleHistory: Selector = NSSelectorFromString("toggleHistory:")
         var syncHistory: Selector = NSSelectorFromString("syncHistory:")
         var undoHistory: Selector = NSSelectorFromString("undoHistory:")
+        var openPalette: Selector = NSSelectorFromString("openPalette:")
     }
 
     struct Input {
@@ -120,113 +123,47 @@ enum MenuBuilder {
                 menu.addItem(cancel)
             }
         }
-        menu.addItem(.separator())
-
-        let desktop = NSMenu()
-        desktop.autoenablesItems = false
-        desktop.addItem(informationalItem("Desktop has its own sign-ins"))
-        if !input.claudeAppExists {
-            desktop.addItem(actionItem("Choose Claude.app…", action: actions.chooseClaudeApp, target: target))
-        }
-        if let progress = input.updateProgress {
-            desktop.addItem(informationalItem(progress))
-        } else if input.isBusy {
-            desktop.addItem(informationalItem("Opening Claude…"))
-        }
-        for profile in input.config.profiles {
-            // Code identity is not evidence of a Desktop login, even for the same profile.
-            let title = profile.isDefaultProfile ? "Default desktop" : profile.label
-            let item = actionItem(title, action: actions.selectProfile, target: target, profile: profile)
-            item.state = ProfileMatching.isRunning(profile, in: input.running) ? .on : .off
-            item.isEnabled = !input.isBusy && input.claudeAppExists
-            item.toolTip = "Open this Desktop profile. Its account is shown inside Claude."
-            desktop.addItem(item)
-            if let reading = input.usage[profile.id], !reading.rows.isEmpty {
-                desktop.addItem(usageItem(for: profile, reading: reading, now: input.now))
-            }
-        }
-        if let notice = input.autoReopenNotice { desktop.addItem(informationalItem(notice)) }
+        // Settings and Desktop actions live in the command palette. A waiting update and
+        // background Desktop results stay here, so nothing important becomes invisible.
+        var desktop: [NSMenuItem] = []
         if let update = input.blockedUpdate, !input.running.isEmpty, input.updateProgress == nil {
-            desktop.addItem(.separator())
-            desktop.addItem(actionItem("Install Claude \(update.staged)…", action: actions.installUpdate, target: target))
+            let install = actionItem("Install Claude \(update.staged)…", action: actions.installUpdate, target: target)
+            install.identifier = NSUserInterfaceItemIdentifier(installItemID)
+            install.isEnabled = !input.isBusy
+            desktop.append(install)
         }
-        desktop.addItem(.separator())
-        let history = actionItem("Share Code history", action: actions.toggleHistory, target: target)
-        history.state = input.historyEnabled ? .on : .off
-        history.isEnabled = !input.historyBusy
-        history.toolTip = "Keep local Code conversations when the Desktop account changes. Claude reopens when its sessions are idle."
-        desktop.addItem(history)
-        let sync = actionItem(input.historyBusy ? "Updating history…" : "Sync history now", action: actions.syncHistory, target: target)
-        sync.isEnabled = !input.historyBusy && !input.isBusy
-        desktop.addItem(sync)
-        let undo = actionItem("Undo last history sync", action: actions.undoHistory, target: target)
-        undo.isEnabled = !input.historyBusy && !input.isBusy
-        desktop.addItem(undo)
-        if let message = input.historyMessage { desktop.addItem(informationalItem(message)) }
-        let settings = NSMenu()
-        settings.autoenablesItems = false
-        let login = actionItem("Open at login", action: actions.toggleLaunchAtLogin, target: target)
-        switch input.launchAtLogin {
-        case .enabled: login.state = .on
-        case .disabled: login.state = .off
-        case .requiresApproval:
-            login.state = .mixed
-            login.toolTip = "Allow Claude Switcher in System Settings → General → Login Items."
-        case .unavailable: login.isEnabled = false
+        for (id, text) in desktopDetails(input) {
+            if let text { desktop.append(detailItem(text, id: id)) }
         }
-        settings.addItem(login)
-        settings.addItem(.separator())
-        settings.addItem(actionItem(input.coordinated ? "Connect Claude…" : "Add Claude account…", action: input.coordinated ? actions.setupSwitching : actions.addProfile, target: target))
-        if input.coordinated,
-           !input.browserConnected || input.browserEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") != .orderedSame {
-            settings.addItem(actionItem(input.browserConnected ? "Connect this Chrome account…" : "Connect Chrome…", action: actions.setupSwitching, target: target))
+        if !desktop.isEmpty {
+            menu.addItem(.separator())
+            for item in desktop { menu.addItem(item) }
         }
-        settings.addItem(submenuItem("Claude Desktop", menu: desktop))
 
-        let commands = NSMenu()
-        let rename = NSMenu()
-        let remove = NSMenu()
-        for submenu in [commands, rename, remove] { submenu.autoenablesItems = false }
-        for profile in input.config.profiles {
-            let title = input.accountStatuses[profile.id]?.email ?? profile.expectedEmail ?? profile.label
-            commands.addItem(actionItem(title, action: actions.copyTerminalCommand, target: target, profile: profile))
-            rename.addItem(actionItem(profile.label, action: actions.renameProfile, target: target, profile: profile))
-            let item = actionItem(title, action: actions.removeProfile, target: target, profile: profile)
-            item.isEnabled = !profile.isDefaultProfile && profile.id != input.config.activeProfileId && !input.isBusy
-            item.toolTip = "Remove from this menu. Account data stays on this Mac."
-            remove.addItem(item)
-        }
-        settings.addItem(submenuItem("Copy terminal command", menu: commands))
-        settings.addItem(submenuItem("Rename desktop profile", menu: rename))
-        settings.addItem(submenuItem("Remove account", menu: remove))
-        if !input.codexAccounts.isEmpty {
-            let reconnect = NSMenu()
-            reconnect.autoenablesItems = false
-            for account in input.codexAccounts {
-                let item = actionItem(account.email, action: actions.selectCodexAccount, target: target)
-                item.representedObject = account.email
-                item.tag = 1
-                item.isEnabled = !input.codexBusy && !input.switching
-                reconnect.addItem(item)
-            }
-            settings.addItem(submenuItem("Reconnect Codex account", menu: reconnect))
-        }
-        settings.addItem(.separator())
-        let reopen = actionItem("Reopen desktops after updates", action: actions.toggleReopenAfterUpdate, target: target)
-        reopen.state = input.config.reopenAfterUpdate ? .on : .off
-        settings.addItem(reopen)
-        let block = actionItem("Pause desktop updates…", action: actions.toggleBlockUpdates, target: target)
-        block.state = input.config.blockClaudeUpdates ? .on : .off
-        settings.addItem(block)
-        settings.addItem(actionItem("Choose Claude.app…", action: actions.chooseClaudeApp, target: target))
-        settings.addItem(actionItem("Diagnostics…", action: actions.showDiagnostics, target: target))
-        settings.addItem(.separator())
+        menu.addItem(.separator())
+        let palette = actionItem("Command…", action: actions.openPalette, target: target)
+        palette.identifier = NSUserInterfaceItemIdentifier(paletteItemID)
+        palette.keyEquivalent = " "
+        palette.keyEquivalentModifierMask = [.option]
+        palette.toolTip = "Switch, add or manage accounts by typing"
+        menu.addItem(palette)
         let quit = actionItem("Quit Claude Switcher", action: actions.quit, target: target)
+        quit.identifier = NSUserInterfaceItemIdentifier(quitItemID)
         quit.keyEquivalent = "q"
         quit.isEnabled = input.updateProgress == nil
-        settings.addItem(quit)
-        menu.addItem(submenuItem("Settings", menu: settings))
+        menu.addItem(quit)
         return menu
+    }
+
+    static let installItemID = "claude-switcher.install-update"
+    static let paletteItemID = "claude-switcher.palette"
+    static let quitItemID = "claude-switcher.quit"
+
+    /// Results of Desktop work that can finish while the palette is closed.
+    private static func desktopDetails(_ input: Input) -> [(id: String, text: String?)] {
+        [("desktop.update-progress", input.updateProgress),
+         ("desktop.reopen-notice", input.autoReopenNotice),
+         ("desktop.history-status", input.historyMessage)]
     }
 
     /// Tracking menus retain their exact item/view instances and dimensions. Structural
@@ -256,7 +193,10 @@ enum MenuBuilder {
             refreshUsage(in: menu, from: codexUsageItem(account, now: input.now))
         }
         menu.items.first { $0.identifier?.rawValue == "codex.cancel-login" }?.isEnabled = input.codexConnecting
-        for (id, text) in [("claude.status", input.switchMessage), ("codex.status", input.codexMessage)] {
+        menu.items.first { $0.identifier?.rawValue == installItemID }?.isEnabled = !input.isBusy && input.updateProgress == nil
+        menu.items.first { $0.identifier?.rawValue == quitItemID }?.isEnabled = input.updateProgress == nil
+        let details = [(id: "claude.status", text: input.switchMessage), (id: "codex.status", text: input.codexMessage)]
+        for (id, text) in details + desktopDetails(input) {
             let item = menu.items.first { $0.identifier?.rawValue == id }
             (item?.view as? MenuDetailView)?.update(text: text ?? "")
         }
@@ -280,12 +220,6 @@ enum MenuBuilder {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = target
         item.representedObject = profile?.id
-        return item
-    }
-
-    private static func submenuItem(_ title: String, menu: NSMenu) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.submenu = menu
         return item
     }
 
@@ -390,35 +324,6 @@ enum MenuBuilder {
         Calendar.current.isDate(date, inSameDayAs: now)
             ? timeFormatter.string(from: date)
             : dayTimeFormatter.string(from: date)
-    }
-
-    static func usageItemIdentifier(_ profileID: String) -> NSUserInterfaceItemIdentifier {
-        NSUserInterfaceItemIdentifier("claude-switcher.usage.\(profileID)")
-    }
-
-    /// Accessibility details belong to the view, outside NSMenu's intrinsic title sizing.
-    static func usageItem(for profile: Profile, reading: UsageReading, now: Date) -> NSMenuItem {
-        let time: (Date) -> String = { clock($0, now: now) }
-        let rows = reading.rows.map { row in
-            UsageBarView.Row(
-                label: row.label,
-                percent: row.percent,
-                level: UsageLevel.of(row.percent ?? 0),
-                trailing: UsageText.trailing(for: row, in: reading, time: time)
-            )
-        }
-        let view = UsageBarView(rows: rows)
-        view.toolTip = UsageText.tooltip(reading, time: time)
-        view.setAccessibilityElement(true)
-        view.setAccessibilityRole(.staticText)
-        view.setAccessibilityLabel(UsageText.accessibilityText(reading, profileLabel: profile.label, time: time))
-
-        let item = NSMenuItem(title: "Usage",
-                              action: nil, keyEquivalent: "")
-        item.view = view
-        item.isEnabled = false
-        item.identifier = usageItemIdentifier(profile.id)
-        return item
     }
 
     // MARK: - Hints
