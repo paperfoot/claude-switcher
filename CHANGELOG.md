@@ -9,6 +9,11 @@ User-visible changes, newest first. From 0.6.1 on, version numbers belong to thi
 - Gauges and percentages use one colour scale everywhere: green below 70%, amber from 70%, red from 90%.
 - A Chrome profile that was closed or disconnected during a switch catches up with the selected account when it next connects.
 - Fewer background Keychain writes.
+- Auto-switch at limit (palette: `auto`): at 95% of the five-hour or weekly limit, Claude Code and every connected Chrome profile move to the account with the most headroom, using claude-swap's auto-switch engine. Never within ten minutes of a manual choice; Codex is never switched automatically.
+- Usage readings keep their colour as they age; one that is more than 20 minutes old shows as `~84%`, and a passed reset shows `↻ due` instead of the finished window's percentage.
+- Adding an account in coordinated mode saves it for switching right after sign-in; before, selecting it failed until the setup script ran again.
+- Switches carry one deadline through every layer and restore what changed before the caller gives up; a Chrome profile's host keeps answering during a popup switch.
+- Removed the unused prototype that patched Anthropic's Chrome extension.
 - Optional: with a TypeSafe API key stored, free-form requests can be interpreted by TypeSafe's Jev model. Off by default.
 
 ## 0.9.7 — Fresh Code credentials (2026-10-10)
