@@ -61,7 +61,8 @@ final class ConfigRoundTripTests: XCTestCase {
             try JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         XCTAssertEqual(Set(object.keys), ["claudeAppPath", "activeProfileId", "profiles",
-                                          "reopenAfterUpdate", "blockClaudeUpdates"])
+                                          "reopenAfterUpdate", "blockClaudeUpdates",
+                                          "autoSwitch", "autoSwitchThreshold", "paletteShortcut"])
 
         let profiles = try XCTUnwrap(object["profiles"] as? [[String: Any]])
         let work = try XCTUnwrap(profiles.first { $0["id"] as? String == "work" })
