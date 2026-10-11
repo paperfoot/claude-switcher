@@ -42,7 +42,16 @@ def _switch(path, email, deadline, sender, restores, selected_at=None):
     options = {'deadline': deadline.unix_ms(reserve)}
     if selected_at is not None:
         options['selected_at'] = selected_at
-    return _send(path, 'switch', email, sender, **options)
+    result = _send(path, 'switch', email, sender, **options)
+    if result.get('error') == 'invalid_request':
+        # A host started before an update still runs the old validator, which refuses the
+        # deadline fields. Ask in the old shape rather than fail until Chrome restarts it.
+        try:
+            timeout = deadline.timeout(deadlines.PROFILE_SWITCH_TIMEOUT + 2, reserve)
+        except deadlines.DeadlineExceeded:
+            return result
+        result = _send(path, 'switch', email, sender, timeout=timeout)
+    return result
 
 
 def _connections(base, deadline, exclude=None, sender=None):
