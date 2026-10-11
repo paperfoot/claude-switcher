@@ -33,8 +33,8 @@ def logged_switch(scope):
             event_log.emit(BASE, 'switch_started', scope=scope)
             try:
                 result = function(*args, **kwargs)
-            except Exception:
-                event_log.emit(BASE, 'switch_finished', scope=scope, ok=False, error='backend_unavailable',
+            except Exception as error:
+                event_log.emit(BASE, 'switch_finished', scope=scope, ok=False, error=failure_code(error),
                                durationMs=int((time.monotonic() - started) * 1000))
                 raise
             event_log.emit(BASE, 'switch_finished', scope=scope,
@@ -295,6 +295,34 @@ def current_selection():
     return {'email': None, 'selectedAt': None}
 
 
+class InvalidData(ValueError):
+    """A request carried data this coordinator refuses to store."""
+
+
+# Failed replies always carry a snake_case code in `error`, which the app, the
+# popup and the event log map. `message` is optional text for people.
+MESSAGES = {
+    'keychain_unavailable': 'Account could not be saved or opened. Unlock your Keychain and try again.',
+    'backend_unavailable': 'Backend unavailable. Open Settings → Set up switching.',
+    'unknown_account': 'This account is not set up in Claude Switcher.',
+    'invalid_data': 'The Claude login could not be saved because it looks invalid.',
+}
+
+
+def failure_code(error, keychain=False):
+    if isinstance(error, ValueError) and str(error) == 'unknown_account':
+        return 'unknown_account'
+    if isinstance(error, InvalidData):
+        return 'invalid_data'
+    return 'keychain_unavailable' if keychain else 'backend_unavailable'
+
+
+def failure(error, keychain=False):
+    code = failure_code(error, keychain)
+    event_log.emit(BASE, 'native_error', error=code)
+    return {'ok': False, 'error': code, 'message': MESSAGES[code]}
+
+
 def handle_native(message):
     if message.get('action') == 'ping':
         return {'ok': True}
@@ -303,24 +331,26 @@ def handle_native(message):
         if isinstance(details, dict):
             event_log.emit(BASE, 'browser_error', **{k: v for k, v in details.items() if k not in ('event', 'base')})
         return {'ok': True}
-    from claude_swap import macos_keychain
     service = 'Paperfoot Claude Switcher Web'
     action = message.get('action')
     try:
+        from claude_swap import macos_keychain
         if action == 'vault_get':
             email = validate_email(message.get('email'))
             raw = macos_keychain.get_password(service, email)
             return {'ok': True, 'entry': restorable_web_entry(json.loads(raw)) if raw else None}
         if action == 'vault_put':
-            entry = message['entry']
+            entry = message.get('entry')
+            if not isinstance(entry, dict): raise InvalidData()
             email = validate_email(entry.get('email'))
             cookies = entry.get('cookies')
-            if not isinstance(cookies, list) or len(cookies) > 200: raise ValueError()
+            if not isinstance(cookies, list) or len(cookies) > 200: raise InvalidData()
             for cookie in cookies:
+                if not isinstance(cookie, dict): raise InvalidData()
                 domain = str(cookie.get('domain', '')).lstrip('.')
-                if domain != 'claude.ai' and not domain.endswith('.claude.ai'): raise ValueError()
+                if domain != 'claude.ai' and not domain.endswith('.claude.ai'): raise InvalidData()
             encoded = json.dumps(entry, separators=(',', ':'))
-            if len(encoded) > 512_000: raise ValueError()
+            if len(encoded) > 512_000: raise InvalidData()
             macos_keychain.set_password(service, email, encoded)
             if macos_keychain.get_password(service, email) != encoded: raise RuntimeError()
             with open(BASE / 'web-accounts.lock', 'a') as lock:
@@ -373,9 +403,8 @@ def handle_native(message):
             return select_account(message.get('email'), verified_browser=True,
                                   deadline=deadline or deadlines.Deadline(deadlines.LEGACY_POPUP_BUDGET))
         return {'ok': False, 'error': 'unknown_action'}
-    except Exception:
-        event_log.emit(BASE, 'native_error', error='keychain_error' if action in ('vault_get', 'vault_put') else 'backend_unavailable')
-        return {'ok': False, 'error': 'Account could not be saved or opened. Unlock your Keychain and try again.'}
+    except Exception as error:
+        return failure(error, keychain=action in ('vault_get', 'vault_put'))
 
 
 def main():
@@ -407,14 +436,15 @@ def main():
                                     deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
         elif command == 'snapshot':
             result = snapshot(deadlines.Deadline(deadlines.STATUS_BUDGET))
+        elif command == 'switch' and len(sys.argv) < 3:
+            result = {'ok': False, 'error': 'invalid_request', 'message': 'Usage: companion.py switch EMAIL'}
         elif command == 'switch':
             # The menu app kills this helper after 350 s; finish well before that.
             result = select_account(sys.argv[2], deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
         else:
             result = {'ok': False, 'error': 'unknown_action'}
-    except Exception:
-        event_log.emit(BASE, 'native_error', error='backend_unavailable')
-        result = {'ok': False, 'error': 'Backend unavailable. Open Settings → Set up switching.'}
+    except Exception as error:
+        result = failure(error)
     print(json.dumps(result))
     if result.get('ok') is False: sys.exit(1)
 

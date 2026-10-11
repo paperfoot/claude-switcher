@@ -14,7 +14,9 @@ code_switch_failed code_restore_failed code_only_after_web_failure
 browser_missing browser_profiles_missing browser_timeout host_timeout host_unavailable
 host_disconnected invalid_browser_result invalid_host_response response_too_large
 backend_unavailable keychain_error invalid_data session_save_failed native_disconnected code_cache_sync_failed
-code_cache_sync_skipped
+code_cache_sync_skipped keychain_unavailable unknown_account unknown_action invalid_request
+duplicate_id request_too_large local_handler_error host_busy selection_changed
+native_unavailable web_signed_out web_identity_changed
 native_timeout unauthorized forbidden network_error rate_limited server_error'''.split())
 STEPS = {'capture_session', 'clear_cookies', 'restore_cookies', 'verify_identity', 'activate_code', 'save_session', 'connect'}
 PROBES = {'verified', 'unauthorized', 'forbidden', 'network_error', 'rate_limited', 'server_error', 'invalid_response', 'identity_mismatch'}
