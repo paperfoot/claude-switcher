@@ -131,7 +131,13 @@ export class SessionSwitcher {
     await this.browser.openLogin();
     return {ok:true};
   }); }
-  status() { return this.serialize(async () => ({ok:true,email:await this.probe(),accounts:await this.vault.list()})); }
+  status() { return this.serialize(async () => {
+    const email = await this.probe();
+    // A vault may also report when each saved login expires, in Unix seconds.
+    const listing = await this.vault.list();
+    const {accounts, expiries} = Array.isArray(listing) ? {accounts: listing} : listing ?? {};
+    return {ok: true, email, accounts: accounts ?? [], ...(expiries ? {expiries} : {})};
+  }); }
   // The current login, never observed halfway through a switch.
   identity() { return this.serialize(() => this.probe()); }
   switchTo(email, activateCode = null, expiresAt = Infinity) { return this.serialize(async () => {

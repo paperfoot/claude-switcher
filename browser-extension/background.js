@@ -9,7 +9,7 @@ let popupSwitchInProgress = false;
 let incomingCommands = 0;
 let commandSwitches = 0;
 // The last committed identity, reported while a switch holds the session lock.
-let knownStatus = {email: null, accounts: []};
+let knownStatus = {email: null, accounts: [], expiries: {}};
 let healthCheckRunning = false;
 let lastHealthCheckAt = 0;
 let lastSessionSavedAt = 0;
@@ -103,7 +103,10 @@ const browser = {
 const vault={
   async get(email){return (await native('vault_get',{email})).entry;},
   async put(entry){await native('vault_put',{entry});},
-  async list(){return (await native('vault_list')).accounts||[];}
+  async list() {
+    const listing = await native('vault_list');
+    return {accounts: listing.accounts || [], expiries: listing.expiries || {}};
+  }
 };
 const switcher=new SessionSwitcher(browser,vault,probe);
 async function digest(text) {
@@ -239,10 +242,10 @@ async function handleCommand(message) {
   // A status probe queued behind a running switch would miss the coordinator's
   // short wait and only report a login in flux. Answer with the committed state.
   if (switching()) {
-    return {...statusExtras(), ok: true, busy: true, email: knownStatus.email, accounts: knownStatus.accounts};
+    return {...statusExtras(), ok: true, busy: true, ...knownStatus};
   }
   const status = await switcher.status();
-  knownStatus = {email: status.email, accounts: status.accounts};
+  knownStatus = {email: status.email, accounts: status.accounts, expiries: status.expiries ?? {}};
   return {...status, ...statusExtras()};
 }
 function connect() {
