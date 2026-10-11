@@ -1403,3 +1403,31 @@ class AutoTickTests(unittest.TestCase):
                 mock.patch.object(companion.subprocess, "run", return_value=failed):
             with self.assertRaises(RuntimeError):
                 companion.auto_events(95.0, timeout=30)
+
+
+class ExpiryBackfillTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.stack = ExitStack()
+        self.stack.enter_context(mock.patch.object(companion, "BASE", self.base))
+        self.stack.enter_context(mock.patch.object(companion, "_EXPIRY_CHECKED", set()))
+
+    def tearDown(self):
+        self.stack.close()
+        self.temporary.cleanup()
+
+    def test_older_saved_logins_gain_an_expiry_once(self):
+        saved = {TARGET_EMAIL: json.dumps({"email": TARGET_EMAIL, "cookies": [
+            {"name": "sessionKey", "value": "secret", "expirationDate": 2_000_000_000.0},
+            {"name": "other", "value": "x", "expirationDate": 1_000.0}]})}
+        reads = []
+        def read(email):
+            reads.append(email)
+            return saved.get(email)
+        companion.backfill_expiries([TARGET_EMAIL, OLD_EMAIL], read)
+        companion.backfill_expiries([TARGET_EMAIL, OLD_EMAIL], read)
+        self.assertEqual(companion.read_expiries(), {TARGET_EMAIL: 2_000_000_000.0})
+        # Each email is read at most once per process, including one with nothing saved.
+        self.assertEqual(sorted(reads), sorted([TARGET_EMAIL, OLD_EMAIL]))
+        self.assertNotIn("secret", (self.base / "web-accounts-meta.json").read_text())
