@@ -8,10 +8,15 @@ private final class MenuRefreshHarness {
 
     private let now: Date
     private let midnightReset: Date
+    private let calendar: Calendar
+    /// Where `--preview` keeps the rendered gauge PNGs; `nil` renders into a temporary folder.
+    private let previewDirectory: URL?
 
-    init() {
+    init(previewDirectory: URL?) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
+        self.calendar = calendar
+        self.previewDirectory = previewDirectory
         now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 28, hour: 23, minute: 50))!
         midnightReset = calendar.date(from: DateComponents(year: 2026, month: 9, day: 29, hour: 0, minute: 5))!
     }
@@ -123,8 +128,80 @@ private final class MenuRefreshHarness {
         }
         checkCompactStructure(reopened, context: "reopened menu")
         checkDesktopStates(target: target)
+        checkPreview(target: target)
 
         return failures
+    }
+
+    /// Renders the menu's own usage rows for fictional accounts in both appearances.
+    private func checkPreview(target: NSObject) {
+        let menu = MenuBuilder.build(makePreviewInput(), target: target, actions: actions())
+        var accounts: [(title: String, rows: [UsageBarView.Row])] = []
+        for (item, next) in zip(menu.items, menu.items.dropFirst()) {
+            guard item.view == nil, !item.isSeparatorItem, let gauges = next.view as? UsageBarView else { continue }
+            accounts.append((item.title, gauges.rows))
+        }
+        check(accounts.count == 5, "preview pairs every account with its usage row")
+        let directory = previewDirectory ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-switcher-preview-\(UUID().uuidString)", isDirectory: true)
+        defer { if previewDirectory == nil { try? FileManager.default.removeItem(at: directory) } }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                let url = directory.appendingPathComponent("usage-gauges-\(name).png")
+                try UsageBarView.renderPreview(rowsPerAccount: accounts, appearance: appearance, to: url)
+                let image = NSBitmapImageRep(data: try Data(contentsOf: url))
+                check(image?.pixelsWide == Int(UsageBarView.preferredWidth) * 2, "\(name) preview is drawn at 2x")
+                check(image?.size.width == UsageBarView.preferredWidth, "\(name) preview records its point size")
+                if previewDirectory != nil { print("preview: \(url.path)") }
+            }
+        } catch {
+            failures.append("preview could not be written: \(error)")
+        }
+    }
+
+    /// Fictional accounts covering each gauge state: current, warning, a failed refresh, a
+    /// passed reset beside an old limit reading, and Codex.
+    private func makePreviewInput() -> MenuBuilder.Input {
+        // Monday 28 September; days past 30 run on into October.
+        let at = { (day: Int, hour: Int, minute: Int) in
+            self.calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute))!
+        }
+        let previewNow = at(28, 13, 20)
+        func reading(_ email: String, minutesOld: Double, _ five: Double, _ fiveReset: Date,
+                     _ week: Double, _ weekReset: Date) -> LiveUsageSnapshot {
+            LiveUsageSnapshot(email: email, fetchedAt: previewNow.addingTimeInterval(-minutesOld * 60),
+                              fiveHour: LiveUsageWindow(percent: five, resetsAt: fiveReset),
+                              sevenDay: LiveUsageWindow(percent: week, resetsAt: weekReset))
+        }
+        let emails = ["work@example.com", "studio@example.com", "team@example.com", "max@example.com"]
+        let profiles = emails.map { Profile(id: String($0.prefix { $0 != "@" }), label: $0, expectedEmail: $0) }
+        var codex = CodexAccount(email: "dev@example.com")
+        codex.connected = true
+        codex.active = true
+        codex.usage = reading("dev@example.com", minutesOld: 3, 9, at(28, 16, 40), 31, at(32, 12, 0))
+        return MenuBuilder.Input(
+            config: Config(claudeAppPath: "/Applications/Fictional Claude.app", activeProfileId: "work", profiles: profiles),
+            running: [],
+            accountStatuses: Dictionary(uniqueKeysWithValues: profiles.map {
+                ($0.id, AccountStatus.signedIn(email: $0.expectedEmail, plan: nil))
+            }),
+            liveUsage: [
+                "work": reading("work@example.com", minutesOld: 2, 12, at(28, 15, 5), 40, at(31, 7, 0)),
+                "studio": reading("studio@example.com", minutesOld: 7, 76, at(28, 17, 30), 88, at(33, 22, 0)),
+                "team": reading("team@example.com", minutesOld: 12, 84, at(28, 14, 10), 93, at(30, 4, 44)),
+                "max": reading("max@example.com", minutesOld: 25, 97, at(28, 13, 5), 100, at(29, 9, 0)),
+            ],
+            usageFailures: ["team"],
+            isBusy: false,
+            configError: nil,
+            claudeAppExists: true,
+            launchAtLogin: .enabled,
+            now: previewNow,
+            codexAccounts: [codex],
+            coordinated: true,
+            selectedEmail: "work@example.com"
+        )
     }
 
     /// Settings moved to the command palette: the menu ends with it and Quit.
@@ -465,7 +542,12 @@ private struct MenuRefreshMain {
     @MainActor
     static func main() {
         _ = NSApplication.shared
-        let failures = MenuRefreshHarness().run()
+        // `--preview <directory>` keeps the rendered gauge PNGs, for example for the README.
+        let arguments = CommandLine.arguments
+        let preview = arguments.firstIndex(of: "--preview").flatMap { index in
+            arguments.indices.contains(index + 1) ? URL(fileURLWithPath: arguments[index + 1], isDirectory: true) : nil
+        }
+        let failures = MenuRefreshHarness(previewDirectory: preview).run()
         guard failures.isEmpty else {
             for failure in failures { fputs("FAIL: \(failure)\n", stderr) }
             fputs("FAIL menu refresh regression (\(failures.count) assertions)\n", stderr)
