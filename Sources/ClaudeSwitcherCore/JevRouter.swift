@@ -24,20 +24,29 @@ public struct JevRouter: Sendable {
 
     public let model: String
     public let timeout: Duration
-    private let apiKey: String
+    /// Produces the key when a request is made. Reading the Keychain can raise an approval
+    /// prompt, so it happens on the request's own task, never while the app is launching.
+    private let apiKey: @Sendable () -> String?
     private let transport: Transport
 
     public init(apiKey: String, model: String = "jev-latest", timeout: Duration = .seconds(8),
                 transport: @escaping Transport = JevRouter.urlSession) {
-        self.apiKey = apiKey
+        self.init(keySource: { apiKey }, model: model, timeout: timeout, transport: transport)
+    }
+
+    public init(keySource: @escaping @Sendable () -> String?, model: String = "jev-latest",
+                timeout: Duration = .seconds(8), transport: @escaping Transport = JevRouter.urlSession) {
+        self.apiKey = keySource
         self.model = model
         self.timeout = timeout
         self.transport = transport
     }
 
-    /// A router using the key saved in the Keychain, or `nil` when there is none.
-    public static func stored() -> JevRouter? {
-        JevKeyStore.load().map { JevRouter(apiKey: $0) }
+    /// A router for the key saved in the Keychain, or `nil` when there is none. Only the item's
+    /// existence is checked here, which never prompts; the key is read when Jev is asked.
+    public static func stored(storage: any JevKeyStorage = JevKeychainStorage()) -> JevRouter? {
+        guard storage.exists(service: JevKeyStore.service, account: JevKeyStore.account) else { return nil }
+        return JevRouter(keySource: { JevKeyStore.load(from: storage) })
     }
 
     /// Up to three candidates Jev thinks `text` asks for, most likely first, each scored with
@@ -89,7 +98,8 @@ public struct JevRouter: Sendable {
                                  timeoutInterval: max(1, seconds))
         request.httpMethod = "POST"
         request.httpShouldHandleCookies = false
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        guard let key = apiKey() else { throw JevError.noKey }
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = try Self.body(model: model, text: text, options: options, context: context)
@@ -250,9 +260,12 @@ public enum JevError: Error, Equatable, LocalizedError {
     /// TypeSafe answered with an HTTP error: 401 means the key was refused, 429 and 529 that it is busy.
     case rejected(status: Int)
     case unreadable
+    /// The saved key could not be read, for example because Keychain access was denied.
+    case noKey
 
     public var errorDescription: String? {
         switch self {
+        case .noKey: return "The TypeSafe key could not be read · allow Keychain access and try again"
         case .timedOut: return "Jev did not answer in time"
         case .rejected(let status) where status == 401 || status == 403: return "TypeSafe refused the API key"
         case .rejected(let status) where status == 429 || status == 529: return "TypeSafe is busy · try again"
@@ -266,9 +279,17 @@ public enum JevError: Error, Equatable, LocalizedError {
 
 /// Where the TypeSafe key lives. Injectable, so tests never touch the real Keychain.
 public protocol JevKeyStorage: Sendable {
+    /// Whether an item exists, without reading its secret (so without any approval prompt).
+    func exists(service: String, account: String) -> Bool
     func read(service: String, account: String) throws -> Data?
     func write(_ data: Data, service: String, account: String) throws
     func delete(service: String, account: String) throws
+}
+
+extension JevKeyStorage {
+    public func exists(service: String, account: String) -> Bool {
+        ((try? read(service: service, account: account)) ?? nil) != nil
+    }
 }
 
 /// The login Keychain, as a generic password.
@@ -279,6 +300,14 @@ public struct JevKeychainStorage: JevKeyStorage {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service,
          kSecAttrAccount as String: account]
+    }
+
+    public func exists(service: String, account: String) -> Bool {
+        var query = query(service: service, account: account)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess
     }
 
     public func read(service: String, account: String) throws -> Data? {
