@@ -150,22 +150,43 @@ public struct Config: Codable, Equatable, Sendable {
     /// Keep Claude Desktop from updating itself, through its own `disableAutoUpdates` policy.
     public var blockClaudeUpdates: Bool
 
+    /// Move Chrome and Claude Code to the account with the most headroom when the selected
+    /// one nears its five-hour or weekly limit. claude-swap's engine makes the decision.
+    public var autoSwitch: Bool
+
+    /// Binding-window utilization (the higher of 5h and weekly) that triggers an automatic
+    /// switch. claude-swap accepts 50–99.9.
+    public var autoSwitchThreshold: Double
+
+    /// Global shortcut that opens the command palette, e.g. "option+space".
+    public var paletteShortcut: String
+
+    public static let defaultAutoSwitchThreshold: Double = 95
+    public static let defaultPaletteShortcut = "option+space"
+
     public init(
         claudeAppPath: String,
         activeProfileId: String,
         profiles: [Profile],
         reopenAfterUpdate: Bool = true,
-        blockClaudeUpdates: Bool = false
+        blockClaudeUpdates: Bool = false,
+        autoSwitch: Bool = false,
+        autoSwitchThreshold: Double = Config.defaultAutoSwitchThreshold,
+        paletteShortcut: String = Config.defaultPaletteShortcut
     ) {
         self.claudeAppPath = claudeAppPath
         self.activeProfileId = activeProfileId
         self.profiles = profiles
         self.reopenAfterUpdate = reopenAfterUpdate
         self.blockClaudeUpdates = blockClaudeUpdates
+        self.autoSwitch = autoSwitch
+        self.autoSwitchThreshold = autoSwitchThreshold
+        self.paletteShortcut = paletteShortcut
     }
 
     private enum CodingKeys: String, CodingKey {
-        case claudeAppPath, activeProfileId, profiles, reopenAfterUpdate, blockClaudeUpdates
+        case claudeAppPath, activeProfileId, profiles, reopenAfterUpdate, blockClaudeUpdates,
+             autoSwitch, autoSwitchThreshold, paletteShortcut
     }
 
     public init(from decoder: Decoder) throws {
@@ -176,6 +197,14 @@ public struct Config: Codable, Equatable, Sendable {
         // Settings added after 0.1: a file written by an older version simply lacks them.
         self.reopenAfterUpdate = try container.decodeIfPresent(Bool.self, forKey: .reopenAfterUpdate) ?? true
         self.blockClaudeUpdates = try container.decodeIfPresent(Bool.self, forKey: .blockClaudeUpdates) ?? false
+        self.autoSwitch = try container.decodeIfPresent(Bool.self, forKey: .autoSwitch) ?? false
+        // Out-of-range values fall back rather than reach claude-swap, which rejects them.
+        let threshold = try container.decodeIfPresent(Double.self, forKey: .autoSwitchThreshold)
+        self.autoSwitchThreshold = threshold.flatMap { (50...99.9).contains($0) ? $0 : nil }
+            ?? Config.defaultAutoSwitchThreshold
+        let shortcut = try container.decodeIfPresent(String.self, forKey: .paletteShortcut)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.paletteShortcut = shortcut.flatMap { $0.isEmpty ? nil : $0 } ?? Config.defaultPaletteShortcut
 
         // Ids are the primary key for every lookup and mutation, so reject a
         // file that would make `profile(id:)` ambiguous. Desktop directories must
