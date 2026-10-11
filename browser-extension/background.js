@@ -4,6 +4,9 @@ let port;
 let connectionError = 'Open Claude Switcher to connect';
 let popupSwitchInProgress = false;
 let incomingCommands = 0;
+let commandSwitches = 0;
+// The last committed identity, reported while a switch holds the session lock.
+let knownStatus = {email: null, accounts: []};
 let healthCheckRunning = false;
 let lastHealthCheckAt = 0;
 let lastSessionSavedAt = 0;
@@ -84,6 +87,7 @@ async function saveCurrentSession() {
   try {
     const result=await sessionSaveInFlight;
     lastSessionSavedAt=Date.now();
+    knownStatus={...knownStatus,email:result.email};
     return result;
   } catch(error) {
     report({error:'session_save_failed',failureStep:'save_session',...probe.diagnostic});
@@ -105,6 +109,33 @@ async function maintainConnection() {
       connect();
     }
   } finally {healthCheckRunning=false;}
+}
+function switching() {
+  return popupSwitchInProgress || commandSwitches > 0;
+}
+function statusExtras() {
+  return {version: chrome.runtime.getManifest().version, lastHealthCheckAt, lastSessionSavedAt};
+}
+async function handleCommand(message) {
+  if (message.command === 'switch') {
+    if (popupSwitchInProgress) return {ok: false, error: 'switch_in_progress'};
+    commandSwitches++;
+    try {
+      const result = await switcher.switchTo(message.email, null, message.expiresAt);
+      if (result.ok) knownStatus = {...knownStatus, email: result.email};
+      return result;
+    } finally {
+      commandSwitches--;
+    }
+  }
+  // A status probe queued behind a running switch would miss the coordinator's
+  // short wait and only report a login in flux. Answer with the committed state.
+  if (switching()) {
+    return {...statusExtras(), ok: true, busy: true, email: knownStatus.email, accounts: knownStatus.accounts};
+  }
+  const status = await switcher.status();
+  knownStatus = {email: status.email, accounts: status.accounts};
+  return {...status, ...statusExtras()};
 }
 function connect() {
   if(port) return;
@@ -128,12 +159,12 @@ function connect() {
         incomingCommands++;
         let result;
         try {
-          result=message.command==='switch'
-            ? popupSwitchInProgress ? {ok:false,error:'switch_in_progress'} : await switcher.switchTo(message.email,null,message.expiresAt)
-            : {...await switcher.status(),version:chrome.runtime.getManifest().version,lastHealthCheckAt,lastSessionSavedAt};
+          result = await handleCommand(message);
+        } catch {
+          result = {ok: false, error: 'web_unavailable'};
+        } finally {
+          incomingCommands--;
         }
-        catch { result={ok:false,error:'web_unavailable'}; }
-        finally {incomingCommands--;}
         if(result.ok===false)report(result);
         if(message.command==='switch' && result.ok)void saveCurrentSession().catch(()=>{});
         if(port===p)p.postMessage({type:'result',id:message.id,result});
@@ -160,6 +191,7 @@ chrome.runtime.onMessage.addListener((msg,sender,send)=>{
     popupSwitchInProgress=true;
     try{
       const result=await switcher.switchTo(msg.email,email=>native('select',{email}));
+      if(result.ok || result.partial)knownStatus={...knownStatus,email:result.email};
       if(result.ok===false)report(result);
       if(result.ok || result.partial)void saveCurrentSession().catch(()=>{});
       return result;
