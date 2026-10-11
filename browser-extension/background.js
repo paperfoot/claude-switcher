@@ -13,7 +13,12 @@ let lastSessionSavedAt = 0;
 let sessionSaveInFlight = null;
 let probesInFlight = 0;
 const requests = new Map();
-function native(action, payload={}, timeoutMs=action==='select'?120000:30000) {
+// Deadline ladder: bridge/deadlines.py. The companion finishes a popup selection,
+// including restoring other profiles, before SELECT_BUDGET_MS; this waits longer,
+// so the local cookies are only rolled back once the companion has given up too.
+const SELECT_BUDGET_MS = 150_000;
+const SELECT_REPLY_MS = 180_000;
+function native(action, payload={}, timeoutMs=30000) {
   if (!port) connect();
   if (!port) return Promise.reject(new Error(connectionError));
   const id = crypto.randomUUID();
@@ -190,7 +195,8 @@ chrome.runtime.onMessage.addListener((msg,sender,send)=>{
     if(popupSwitchInProgress)return {ok:false,error:'switch_in_progress'};
     popupSwitchInProgress=true;
     try{
-      const result=await switcher.switchTo(msg.email,email=>native('select',{email}));
+      const activateCode = email => native('select', {email, deadline: Date.now() + SELECT_BUDGET_MS}, SELECT_REPLY_MS);
+      const result=await switcher.switchTo(msg.email,activateCode);
       if(result.ok || result.partial)knownStatus={...knownStatus,email:result.email};
       if(result.ok===false)report(result);
       if(result.ok || result.partial)void saveCurrentSession().catch(()=>{});
