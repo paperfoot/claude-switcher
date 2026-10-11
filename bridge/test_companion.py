@@ -238,6 +238,57 @@ class CompanionTests(unittest.TestCase):
         keychain.set_password.assert_not_called()
         self.assertEqual(json.loads(encoded), entry)
 
+    def web_entry(self, value="key-1", url="https://claude.ai/chat/1", saved_at=1):
+        return {
+            "email": TARGET_EMAIL,
+            "savedAt": saved_at,
+            "url": url,
+            "cookies": [
+                {"name": "sessionKey", "value": value, "domain": ".claude.ai", "session": False,
+                 "expirationDate": 2_000_000_000},
+                {"name": "lastActiveOrg", "value": "org", "domain": ".claude.ai", "session": False,
+                 "expirationDate": 2_000_000_000},
+            ],
+        }
+
+    def put_with_stored(self, stored, entry):
+        keychain = mock.Mock()
+        encoded = json.dumps(entry, separators=(",", ":"))
+        keychain.get_password.side_effect = [stored, encoded]
+        with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
+            result = self.handle_native({"action": "vault_put", "entry": entry}, keychain=keychain)
+        return result, keychain, encoded
+
+    def test_vault_put_skips_the_keychain_write_when_nothing_changed(self):
+        self.base.mkdir(parents=True)
+        accounts = self.base / "web-accounts.json"
+        accounts.write_text(json.dumps([TARGET_EMAIL]))
+        before = accounts.stat().st_mtime_ns
+        stored = self.web_entry(saved_at=1)
+        stored["cookies"].reverse()
+        result, keychain, _ = self.put_with_stored(json.dumps(stored), self.web_entry(saved_at=99))
+
+        self.assertEqual(result, {"ok": True, "saved": False})
+        keychain.set_password.assert_not_called()
+        self.assertEqual(keychain.get_password.call_count, 1)
+        self.assertEqual(accounts.stat().st_mtime_ns, before)
+
+    def test_vault_put_writes_renewed_cookies_and_new_pages(self):
+        self.base.mkdir(parents=True)
+        cases = (
+            ("renewed value", json.dumps(self.web_entry()), self.web_entry(value="key-2")),
+            ("later page", json.dumps(self.web_entry()), self.web_entry(url="https://claude.ai/chat/2")),
+            ("first save", None, self.web_entry()),
+            ("unreadable stored entry", "{not json", self.web_entry()),
+        )
+        for label, stored, entry in cases:
+            with self.subTest(case=label):
+                result, keychain, encoded = self.put_with_stored(stored, entry)
+                self.assertEqual(result, {"ok": True, "saved": True})
+                keychain.set_password.assert_called_once_with(
+                    "Paperfoot Claude Switcher Web", TARGET_EMAIL, encoded)
+        self.assertEqual(json.loads((self.base / "web-accounts.json").read_text()), [TARGET_EMAIL])
+
     def test_read_state_tolerates_missing_corrupt_and_non_object_state(self):
         self.assertEqual(companion.read_state(), {})
 
