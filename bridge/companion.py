@@ -452,6 +452,29 @@ def remember_web_account(email, expiry):
             atomic_json(BASE / 'web-accounts-meta.json', {'expiries': expiries})
 
 
+# Emails whose saved login this host process has already inspected for an expiry.
+_EXPIRY_CHECKED = set()
+
+
+def backfill_expiries(emails, read):
+    """Logins saved before expiries were recorded have none. Read each such login once per
+    host process and record when it expires; cookie values never leave this function."""
+    known = read_expiries()
+    for email in emails:
+        if email in known or email in _EXPIRY_CHECKED:
+            continue
+        _EXPIRY_CHECKED.add(email)
+        try:
+            raw = read(email)
+            entry = json.loads(raw) if raw else None
+            cookies = entry.get('cookies') if isinstance(entry, dict) else None
+            expiry = session_expiry(cookies) if isinstance(cookies, list) else None
+        except Exception:
+            continue
+        if expiry is not None:
+            remember_web_account(email, expiry)
+
+
 # Failed replies always carry a snake_case code in `error`, which the app, the
 # popup and the event log map. `message` is optional text for people.
 MESSAGES = {
@@ -516,6 +539,7 @@ def handle_native(message):
             emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
             configured = configured_emails()
             accounts = [e for e in emails if e in configured]
+            backfill_expiries(accounts, lambda email: macos_keychain.get_password(service, email))
             expiries = {e: seconds for e, seconds in read_expiries().items() if e in accounts}
             return {'ok': True, 'accounts': accounts, 'expiries': expiries}
         if action == 'pending_selection':
