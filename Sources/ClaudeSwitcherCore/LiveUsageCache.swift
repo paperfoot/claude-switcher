@@ -41,11 +41,12 @@ public enum LiveUsageCache {
     }
 }
 
-/// Presentation retains last-known values while refreshing, but labels older or expired
-/// readings explicitly. Sign-out and identity mismatches always hide cached account data.
+/// Presentation retains last-known values while refreshing and marks them approximate only
+/// once stale. Sign-out and identity mismatches always hide cached account data.
 public struct LiveUsagePresentation: Sendable {
     public let snapshot: LiveUsageSnapshot?
-    public let isCached: Bool
+    /// The last refresh failed or the reading is older than `LiveUsagePolicy.staleAfter`.
+    public let isStale: Bool
 
     public init(profile: Profile, status: AccountStatus?, snapshot: LiveUsageSnapshot?, failed: Bool, now: Date) {
         var allowed = true
@@ -59,6 +60,6 @@ public struct LiveUsagePresentation: Sendable {
         }
         let age = snapshot.map { now.timeIntervalSince($0.fetchedAt) } ?? .infinity
         self.snapshot = allowed && age >= 0 && age <= LiveUsagePolicy.cacheLifetime ? snapshot : nil
-        self.isCached = failed || status?.email == nil || age >= LiveUsagePolicy.refreshInterval
+        self.isStale = LiveUsagePolicy.isStale(self.snapshot, failed: failed, now: now)
     }
 }

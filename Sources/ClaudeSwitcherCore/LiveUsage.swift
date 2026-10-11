@@ -60,8 +60,17 @@ public enum LiveUsageError: Error, Equatable, Sendable {
 
 public enum LiveUsagePolicy {
     public static let refreshInterval: TimeInterval = 300
+    /// Accounts refresh at different moments, so a reading counts as stale only well past one
+    /// refresh cycle. Stale readings keep their colours and are shown as approximate.
+    public static let staleAfter: TimeInterval = 20 * 60
     public static let cacheLifetime: TimeInterval = 7 * 24 * 60 * 60
     public static let failureBackoff: TimeInterval = 900
+
+    /// No reading, a failed refresh, or a reading older than `staleAfter`.
+    public static func isStale(_ snapshot: LiveUsageSnapshot?, failed: Bool, now: Date) -> Bool {
+        guard let snapshot, !failed else { return true }
+        return now.timeIntervalSince(snapshot.fetchedAt) > staleAfter
+    }
 
     public static func nextRefresh(for snapshot: LiveUsageSnapshot, now: Date) -> Date {
         let reset = [snapshot.fiveHour?.resetsAt, snapshot.sevenDay?.resetsAt]
