@@ -140,9 +140,12 @@ export class SessionSwitcher {
   }); }
   // The current login, never observed halfway through a switch.
   identity() { return this.serialize(() => this.probe()); }
-  switchTo(email, activateCode = null, expiresAt = Infinity) { return this.serialize(async () => {
+  // `stillWanted` runs first inside the serialized section, so a switch queued ahead of
+  // this one can cancel it instead of being overwritten by it.
+  switchTo(email, activateCode = null, expiresAt = Infinity, stillWanted = null) { return this.serialize(async () => {
     const expired = () => Date.now() >= expiresAt;
     if (expired()) return {ok:false,error:'browser_timeout',email};
+    if (stillWanted && !(await stillWanted())) return {ok:false,error:'selection_changed',email};
     email = emailKey(email);
     const target = await this.vault.get(email);
     if (!target || emailKey(target.email) !== email) return {ok:false,error:'web_login_needed',email};

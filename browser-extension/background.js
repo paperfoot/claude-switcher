@@ -182,9 +182,20 @@ async function catchUp() {
     if (selectedAt > appliedAt) await selections.switched(email, selectedAt);
     return;
   }
-  const result = await switcher.switchTo(email, null, Date.now() + CATCH_UP_MS);
+  // A popup or menu switch queued while this ran wins: it changes the record.
+  const before = await selections.current();
+  const unchanged = async () => {
+    const now = await selections.current();
+    return now.appliedAt === before.appliedAt && now.identity === before.identity;
+  };
+  const result = await switcher.switchTo(email, null, Date.now() + CATCH_UP_MS, unchanged);
   if (!result.ok) {
-    report(result);
+    if (result.error !== 'selection_changed') report(result);
+    // Try again at the next health check after a passing problem, such as Chrome starting
+    // before the network; an expired or missing login needs the user instead.
+    const transient = result.error === 'browser_timeout' ||
+      ['network_error', 'rate_limited', 'server_error'].includes(result.probeStatus);
+    if (transient) catchUpDue = true;
     return;
   }
   await selections.switched(email, selectedAt);
