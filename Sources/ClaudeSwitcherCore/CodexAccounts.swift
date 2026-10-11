@@ -173,7 +173,8 @@ public struct CodexRuntime: CodexAccountVerifying {
         var environment = ProcessInfo.processInfo.environment
         for key in Array(environment.keys) where key.hasPrefix("OPENAI_") || key.hasPrefix("CODEX_") { environment.removeValue(forKey: key) }
         let rpc = try CodexRPCSession(executableURL: executable, profileHome: home, environment: environment)
-        do { try await rpc.initialize(timeout: .seconds(20), clientVersion: "0.8.0"); return rpc }
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        do { try await rpc.initialize(timeout: .seconds(20), clientVersion: version); return rpc }
         catch { await rpc.stop(); throw error }
     }
     public func inspect(home: URL, usage: Bool) async throws -> (CodexCredential, LiveUsageSnapshot?) {
