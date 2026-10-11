@@ -1,4 +1,6 @@
 #!/bin/zsh
+# Menu regression harness. `--preview <directory>` also keeps light and dark PNGs of the
+# usage gauges there, for example for the README.
 set -euo pipefail
 
 script_dir=${0:A:h}
@@ -36,4 +38,4 @@ swiftc \
   "$repo_dir/Tests/MenuRefresh/main.swift" \
   -o "$build_dir/menu-refresh"
 
-"$build_dir/menu-refresh"
+"$build_dir/menu-refresh" "$@"
