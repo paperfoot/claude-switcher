@@ -39,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastCoordinatedCheck: Date = .distantPast
     private var coordinatedGeneration = 0
     private var selectedEmailOverride: String?
+    /// Automatic switching waits after a manual choice, so it never overrides one at once.
+    private var lastManualSwitch: Date = .distantPast
     private var usageRefreshTimer: Timer?
     private var isSleeping = false
 
@@ -482,9 +484,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func switchAccount(_ sender: NSMenuItem) {
-        guard !isSwitchingAccount, !codexBusy, let id = sender.representedObject as? String,
+        guard let id = sender.representedObject as? String else { return }
+        switchAccount(profileID: id)
+    }
+
+    private func switchAccount(profileID id: String) {
+        guard !isSwitchingAccount, !codexBusy,
               let email = config.profile(id: id)?.expectedEmail,
               let setup = CoordinatedSetup.load(), setup.enabled else { return }
+        lastManualSwitch = Date()
         isSwitchingAccount = true
         coordinatedGeneration += 1
         let generation = coordinatedGeneration
@@ -562,10 +570,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func selectCodexAccount(_ sender: NSMenuItem) {
-        guard !codexBusy, !isSwitchingAccount, let email = sender.representedObject as? String,
+        guard let email = sender.representedObject as? String else { return }
+        selectCodex(email: email, reconnect: sender.tag == 1)
+    }
+
+    private func selectCodex(email: String, reconnect: Bool) {
+        guard !codexBusy, !isSwitchingAccount,
               let account = codexAccounts.first(where: { $0.email == email }), let service = codexService else { return }
         codexBusy = true
-        let needsLogin = !account.connected || sender.tag == 1
+        let needsLogin = !account.connected || reconnect
         codexConnecting = needsLogin
         codexMessage = codexConnecting ? "Sign in to \(email) in your browser" : "Switching Codex…"
         statusFeedback?.begin(email: "Codex · \(email)")
@@ -622,9 +635,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func undoHistory(_ sender: NSMenuItem) { desktopHistory?.undoLastMove() }
 
     @objc private func selectProfile(_ sender: NSMenuItem) {
-        guard !isBusy,
-              let id = sender.representedObject as? String,
-              let profile = config.profile(id: id) else { return }
+        guard let id = sender.representedObject as? String else { return }
+        openDesktop(profileID: id)
+    }
+
+    private func openDesktop(profileID id: String) {
+        guard !isBusy, let profile = config.profile(id: id) else { return }
         beginLaunch(profile)
     }
 
@@ -739,8 +755,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openTerminal(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let profile = config.profile(id: id), !isOpeningTerminal else { return }
+        guard let id = sender.representedObject as? String else { return }
+        openTerminal(profileID: id)
+    }
+
+    private func openTerminal(profileID id: String) {
+        guard let profile = config.profile(id: id), !isOpeningTerminal else { return }
         guard let executable = Diagnostics.locateOnSearchPath("claude") else {
             presentAlert(style: .warning, title: "Claude Code was not found",
                          message: "Install Claude Code, then open this account again.")
@@ -761,16 +781,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                              message: "Claude Code did not return an account status. Try again or open Settings → Diagnostics.")
                 return
             }
-            launchTerminal(profile: profile, executable: executable, signIn: !status.matches(profile.expectedEmail))
+            let signIn = !status.matches(profile.expectedEmail)
+            launchTerminal(profile: profile, executable: executable, signIn: signIn,
+                           register: signIn ? coordinatedRegistration(for: profile) : nil)
         }
     }
 
-    private func launchTerminal(profile: Profile, executable: String, signIn: Bool) {
+    /// In coordinated mode a new login must also be saved by claude-swap, or selecting the
+    /// account later fails. Same account directory as the login, so cswap reads that login.
+    private func coordinatedRegistration(for profile: Profile) -> String? {
+        guard let setup = CoordinatedSetup.load(), setup.enabled, profile.credDir != nil else { return nil }
+        return LaunchPlanning.terminalCommand(for: profile, executable: setup.cswap) + " add"
+    }
+
+    private func launchTerminal(profile: Profile, executable: String, signIn: Bool, register: String? = nil) {
         do {
             let directory = URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("Library/Application Support/Claude Switcher/Launchers", isDirectory: true)
             let script = try TerminalLauncher.write(profile: profile, executable: executable,
-                                                   directory: directory, signIn: signIn)
+                                                   directory: directory, signIn: signIn, register: register)
             let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
             NSWorkspace.shared.open([script], withApplicationAt: terminal,
                                     configuration: NSWorkspace.OpenConfiguration()) { _, error in
@@ -787,26 +816,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func copyTerminalCommand(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let profile = config.profile(id: id) else { return }
+        guard let id = sender.representedObject as? String else { return }
+        copyTerminalCommand(profileID: id)
+    }
+
+    private func copyTerminalCommand(profileID id: String) {
+        guard let profile = config.profile(id: id) else { return }
         let command = CoordinatedSetup.load()?.enabled == true ? "claude --resume" : Diagnostics.terminalCommand(for: profile)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
     }
 
     @objc private func addProfile(_ sender: NSMenuItem) {
-        let alert = NSAlert()
-        alert.messageText = "Add account"
-        alert.informativeText = "Enter the email you use for Claude."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        field.placeholderString = "you@example.com"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
+        addAccount(email: nil)
+    }
 
-        guard runModal(alert) == .alertFirstButtonReturn else { return }
-        let label = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Adds a Claude account and opens its sign-in. `nil` asks for the email first.
+    private func addAccount(email: String?) {
+        var label = email?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if label.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Add account"
+            alert.informativeText = "Enter the email you use for Claude."
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+            field.placeholderString = "you@example.com"
+            alert.accessoryView = field
+            alert.addButton(withTitle: "Add")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = field
+            guard runModal(alert) == .alertFirstButtonReturn else { return }
+            label = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard label.contains("@"), !label.contains(where: { $0.isWhitespace }) else {
             presentAlert(style: .warning, title: "Enter an email address", message: "Use the email for your Claude account.")
             return
@@ -843,15 +883,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         accountStatuses[profile.id] = .signedOut
         lastAccountCheck = .distantPast
-        let item = NSMenuItem()
-        item.representedObject = profile.id
-        openTerminal(item)
+        openTerminal(profileID: profile.id)
+    }
+
+    @objc private func renameProfile(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        renameProfile(id: id)
     }
 
     /// Label only. The id and both directories are the profile's identity and never change.
-    @objc private func renameProfile(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let profile = config.profile(id: id) else { return }
+    private func renameProfile(id: String) {
+        guard let profile = config.profile(id: id) else { return }
 
         let alert = NSAlert()
         alert.messageText = "Rename \u{201C}\(profile.label)\u{201D}"
@@ -878,8 +920,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func removeProfile(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              let profile = config.profile(id: id) else { return }
+        guard let id = sender.representedObject as? String else { return }
+        removeProfile(id: id)
+    }
+
+    private func removeProfile(id: String) {
+        guard let profile = config.profile(id: id) else { return }
 
         var details = [
             "Claude Switcher only forgets this profile. Nothing on disk is deleted \u{2014} re-adding it with the same directories restores it, still signed in."
@@ -1365,13 +1411,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(report, forType: .string)
         } else if response == .alertThirdButtonReturn {
-            let log = Config.configURL.deletingLastPathComponent().appendingPathComponent("events.jsonl")
-            if FileManager.default.fileExists(atPath: log.path) {
-                NSWorkspace.shared.open(log)
-            } else {
-                NSWorkspace.shared.open(log.deletingLastPathComponent())
-            }
+            openSwitchLog()
         }
+    }
+
+    private func openSwitchLog() {
+        let log = Config.configURL.deletingLastPathComponent().appendingPathComponent("events.jsonl")
+        NSWorkspace.shared.open(FileManager.default.fileExists(atPath: log.path) ? log : log.deletingLastPathComponent())
     }
 
     // MARK: - Actions: launch at login
