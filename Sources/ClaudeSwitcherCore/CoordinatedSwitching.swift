@@ -101,6 +101,9 @@ public struct AutoSwitchResult: Decodable, Sendable {
 /// Bounded subprocess calls. The helper emits only identity/usage/result metadata here;
 /// Chrome's native-messaging channel is separate and never enters app diagnostics.
 public enum CoordinatedSwitching {
+    /// Outer bound of the deadline ladder in bridge/deadlines.py. The helper finishes a
+    /// switch, including any rollback, within its 300 s budget; this only stops a hung helper.
+    public static let helperTimeout: TimeInterval = 350
     public static func snapshot(setup: CoordinatedSetup) throws -> CoordinatedSnapshot {
         try JSONDecoder().decode(CoordinatedSnapshot.self, from: run(setup: setup, arguments: ["snapshot"]))
     }
@@ -130,7 +133,7 @@ public enum CoordinatedSwitching {
         let done = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in done.signal() }
         try process.run()
-        if done.wait(timeout: .now() + 350) == .timedOut {
+        if done.wait(timeout: .now() + helperTimeout) == .timedOut {
             process.terminate()
             if done.wait(timeout: .now() + 1) == .timedOut { kill(process.processIdentifier, SIGKILL) }
             throw CocoaError(.executableRuntimeMismatch)
