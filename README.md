@@ -8,9 +8,8 @@ Switch Claude (Chrome and Claude Code) and Codex accounts from one command palet
 
 A small native menu bar app for Macs with more than one Claude or Codex subscription. Pick a Claude account and both Claude.ai in Chrome and Claude Code use it. Pick a Codex account and the Codex app reopens with it.
 
-<!-- assets/palette-light.png will be generated with example data only (work@example.com, personal@example.com, lab@example.org). -->
 <p align="center">
-  <img src="assets/palette-light.png" width="640" alt="The command palette with “work” typed and work@example.com as the first suggestion">
+  <img src="assets/palette-light.png" width="640" alt="The command palette before typing: accounts ranked by headroom with their five-hour and weekly usage, then Add account and Auto-switch">
 </p>
 
 <p align="center">
@@ -31,12 +30,29 @@ Press **⌥Space** anywhere, or choose **Command…** in the menu bar. Type a fe
 | `codex personal` | Switch Codex to personal@example.com |
 | `add new@example.com` | Add an account |
 | `reconnect codex work` | Sign in to a saved Codex account again |
+| `auto` | Turn automatic switching near a limit on or off |
 | `diagnostics` | Open diagnostics |
 | `quit` | Quit the switcher |
 
-**↑** and **↓** move through the suggestions, **⌘1**–**⌘9** pick one directly, and **⎋** closes the palette.
+**↑** and **↓** move through the suggestions, **⌘1**–**⌘9** pick one directly, and **⎋** closes the palette. Before you type, the palette lists the accounts with the most headroom first.
 
-The menu bar menu shows every account with its usage. Click an email to switch.
+The menu bar menu shows every account with its usage. Click an email to switch. To use a different shortcut, set `"paletteShortcut": "ctrl+option+cmd+space"` (or any modifier chord) in `~/.config/claude-switcher/config.json` and restart the app; the menu shows the shortcut that registered.
+
+<p align="center">
+  <img src="assets/palette-dark.png" width="640" alt="The command palette in dark appearance with “per” typed: switch Claude or Codex to personal@example.com">
+</p>
+
+## Switch automatically near a limit
+
+Type `auto` in the palette and turn on **Auto-switch at limit**. When the selected Claude account reaches 95% of its five-hour or weekly limit, the switcher moves Claude Code and every connected Chrome profile to the account with the most headroom, so long sessions keep going.
+
+- The decision comes from [claude-swap's auto-switch engine](https://github.com/realiti4/claude-swap): it refreshes the target's login first, never lands on an account that is near its own limit, and avoids switching back and forth.
+- Usage is polled at a pace Anthropic's usage endpoint accepts (roughly one request per account every few minutes, faster near the limit), so turning this on does not get accounts rate-limited.
+- It never overrides a choice you just made: there is no automatic switch in the ten minutes after you pick an account yourself.
+- Every automatic switch shows in the menu bar and in the menu, with the time.
+- Codex is never switched automatically, because a Codex switch restarts the app.
+
+Change the trigger with `"autoSwitchThreshold": 90` (50–99.9) in `~/.config/claude-switcher/config.json`. Running Claude Code sessions pick up the new login on their next request.
 
 A Claude switch changes Claude.ai in each connected Chrome profile and the login that Claude Code uses. Your terminals, working directories and `~/.claude` history stay as they are. Claude Code normally picks up the new login on its next request; its Keychain cache can delay this by about 30 seconds. If a running process keeps its old login, stop it when you are ready and run `claude --resume` or `claude --continue`.
 
@@ -50,9 +66,9 @@ Free-form requests such as “use the account with the most weekly quota for Cla
 printf %s "$TYPESAFE_API_KEY" | "/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher" --set-typesafe-key
 ```
 
-Remove the key with `--remove-typesafe-key`.
+Remove the key with `--remove-typesafe-key`. The key lives in your login Keychain as **Claude Switcher TypeSafe**. When the palette cannot place what you typed, it offers **Ask Jev**; a confident, harmless answer runs straight away, and anything else waits for **↩**.
 
-**Privacy:** when a request goes to Jev, the app sends only the typed request and the account emails and usage needed to choose an action. Nothing is sent to TypeSafe otherwise.
+**Privacy:** a request goes to Jev only when you choose **Ask Jev**. The app then sends the typed request and the account emails and usage needed to choose an action. Nothing is sent to TypeSafe otherwise.
 
 ## Reading the gauges
 
@@ -67,6 +83,8 @@ Each account shows how much of its five-hour and weekly limits it has used.
 | `↻ due` | The reset has passed; waiting for a fresh reading |
 
 Readings refresh about every five minutes and after your Mac wakes. They survive restarts. Cached readings expire after seven days.
+
+Saved logins stay usable without you doing anything: the background usage checks keep the Claude Code and Codex logins of inactive accounts refreshed, and the Chrome companion saves renewed Claude.ai cookies for the account each profile is using.
 
 ## Install
 
