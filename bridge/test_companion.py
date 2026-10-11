@@ -71,6 +71,7 @@ class CompanionTests(unittest.TestCase):
         args, kwargs = self.browser_request.call_args
         self.assertEqual(args, ("switch", email))
         self.assertIsInstance(kwargs.pop("deadline"), companion.deadlines.Deadline)
+        self.assertIsInstance(kwargs.pop("selected_at"), float)
         self.assertEqual(kwargs, expected)
 
     def handle_native(self, message, keychain=None):
@@ -296,6 +297,7 @@ class CompanionTests(unittest.TestCase):
                         "codeEmail": TARGET_EMAIL,
                         "webEmail": None,
                         "browserReady": False,
+                        "selectedAt": mock.ANY,
                     },
                 )
                 self.assertEqual(self.code_targets(), [TARGET_EMAIL])
@@ -328,6 +330,7 @@ class CompanionTests(unittest.TestCase):
                         "codeEmail": TARGET_EMAIL,
                         "webEmail": None,
                         "browserReady": False,
+                        "selectedAt": mock.ANY,
                     },
                 )
                 self.assertEqual(self.code_targets(), [TARGET_EMAIL])
@@ -363,6 +366,7 @@ class CompanionTests(unittest.TestCase):
                 "codeEmail": TARGET_EMAIL,
                 "webEmail": None,
                 "browserReady": False,
+                "selectedAt": mock.ANY,
             },
         )
         self.assertEqual(self.code_targets(), [TARGET_EMAIL])
@@ -387,6 +391,7 @@ class CompanionTests(unittest.TestCase):
                 "codeEmail": TARGET_EMAIL,
                 "webEmail": None,
                 "browserReady": False,
+                "selectedAt": mock.ANY,
             },
         )
         self.assertEqual(self.code_targets(), [TARGET_EMAIL])
@@ -410,6 +415,7 @@ class CompanionTests(unittest.TestCase):
                 "codeEmail": TARGET_EMAIL,
                 "webEmail": None,
                 "browserReady": False,
+                "selectedAt": mock.ANY,
             },
         )
         self.assertEqual(self.code_targets(), [TARGET_EMAIL])
@@ -467,6 +473,7 @@ class CompanionTests(unittest.TestCase):
                 "codeEmail": TARGET_EMAIL,
                 "webEmail": None,
                 "browserReady": False,
+                "selectedAt": mock.ANY,
             },
         )
         self.assertEqual(self.code_targets(), [TARGET_EMAIL])
@@ -604,6 +611,116 @@ class CompanionTests(unittest.TestCase):
                     result = self.handle_native({"action": "pending_selection"})
 
                     self.assertEqual(result, {"ok": True, "email": expected})
+
+    def per_profile_selection(self):
+        return self.handle_native({"action": "pending_selection", "perProfile": True})
+
+    def test_selection_is_offered_to_every_profile_after_one_catches_up(self):
+        state = {"ok": True, "codeEmail": TARGET_EMAIL, "browserReady": False, "selectedAt": 1234.5}
+        self.base.mkdir(parents=True)
+        self.state.write_text(json.dumps(state))
+        self.code_identity.return_value = TARGET_EMAIL
+        with mock.patch.object(companion, "configured_emails", return_value={OLD_EMAIL, TARGET_EMAIL}):
+            first = self.per_profile_selection()
+            ready = self.handle_native(
+                {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 1234.5})
+            second = self.per_profile_selection()
+            legacy = self.handle_native({"action": "pending_selection"})
+
+        expected = {"ok": True, "email": TARGET_EMAIL, "selectedAt": 1234.5}
+        self.assertEqual(first, expected)
+        self.assertEqual(ready, {"ok": True})
+        self.assertTrue(json.loads(self.state.read_text())["browserReady"])
+        # A second profile, or one that was closed during the switch, still sees it.
+        self.assertEqual(second, expected)
+        # 0.7.x companions keep their one-shot behaviour.
+        self.assertEqual(legacy, {"ok": True, "email": None})
+
+    def test_selection_includes_code_switches_that_some_profiles_missed(self):
+        state = {"ok": False, "partial": True, "error": "code_only_after_web_failure",
+                 "browserError": "host_timeout", "codeEmail": TARGET_EMAIL,
+                 "browserReady": False, "selectedAt": 99.0}
+        self.base.mkdir(parents=True)
+        self.state.write_text(json.dumps(state))
+        self.code_identity.return_value = TARGET_EMAIL
+        with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
+            self.assertEqual(self.per_profile_selection(),
+                             {"ok": True, "email": TARGET_EMAIL, "selectedAt": 99.0})
+            ready = self.handle_native(
+                {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 99.0})
+        self.assertEqual(ready, {"ok": True})
+        self.assert_saved(state)
+
+    def test_selection_requires_the_active_code_login_and_a_valid_stamp(self):
+        good = {"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": 10.0}
+        cases = (
+            (good, OLD_EMAIL, {TARGET_EMAIL}, "Code login changed since"),
+            (good, TARGET_EMAIL, {OLD_EMAIL}, "account no longer configured"),
+            ({**good, "ok": False}, TARGET_EMAIL, {TARGET_EMAIL}, "Code switch failed"),
+            ({**good, "selectedAt": None}, TARGET_EMAIL, {TARGET_EMAIL}, "no stamp"),
+            ({**good, "selectedAt": True}, TARGET_EMAIL, {TARGET_EMAIL}, "boolean stamp"),
+            ({**good, "selectedAt": "10"}, TARGET_EMAIL, {TARGET_EMAIL}, "text stamp"),
+            ({}, TARGET_EMAIL, {TARGET_EMAIL}, "no selection yet"),
+        )
+        self.base.mkdir(parents=True)
+        for state, identity, configured, label in cases:
+            with self.subTest(case=label):
+                self.state.write_text(json.dumps(state))
+                self.code_identity.return_value = identity
+                with mock.patch.object(companion, "configured_emails", return_value=configured):
+                    self.assertEqual(self.per_profile_selection(),
+                                     {"ok": True, "email": None, "selectedAt": None})
+
+    def test_selection_is_deferred_while_a_switch_runs(self):
+        self.base.mkdir(parents=True)
+        self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": 1.0}))
+        with (self.base / "switch.lock").open("a") as held_lock:
+            fcntl.flock(held_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.per_profile_selection()
+        self.assertEqual(result, {"ok": False, "error": "switch_in_progress"})
+        self.code_identity.assert_not_called()
+
+    def test_one_stamp_covers_the_code_switch_every_profile_and_the_saved_state(self):
+        result = companion.select_account(TARGET_EMAIL)
+
+        stamp = self.browser_request.call_args.kwargs["selected_at"]
+        self.assertEqual(result["selectedAt"], stamp)
+        self.assertEqual(json.loads(self.state.read_text())["selectedAt"], stamp)
+
+    def test_chrome_only_switch_stamps_its_selection_without_code_state(self):
+        companion.select_browser(TARGET_EMAIL, expected_profiles=2)
+
+        self.assertIsInstance(self.browser_request.call_args.kwargs["selected_at"], float)
+        self.assertFalse(self.state.exists())
+
+    def test_browser_ready_rejects_another_selection_stamp(self):
+        state = {"ok": True, "codeEmail": TARGET_EMAIL, "browserReady": False, "selectedAt": 1.0}
+        self.base.mkdir(parents=True)
+        self.state.write_text(json.dumps(state))
+        self.code_identity.return_value = TARGET_EMAIL
+
+        result = self.handle_native(
+            {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 2.0})
+
+        self.assertEqual(result, {"ok": False, "error": "selection_changed"})
+        self.assert_saved(state)
+
+    def test_browser_ready_never_overwrites_a_switch_that_finished_meanwhile(self):
+        state = {"ok": True, "codeEmail": TARGET_EMAIL, "browserReady": False, "selectedAt": 1.0}
+        newer = {"ok": True, "codeEmail": TARGET_EMAIL, "browserReady": True, "selectedAt": 2.0}
+        self.base.mkdir(parents=True)
+        self.state.write_text(json.dumps(state))
+
+        def identity_while_another_switch_finishes(**_):
+            self.state.write_text(json.dumps(newer))
+            return TARGET_EMAIL
+
+        self.code_identity.side_effect = identity_while_another_switch_finishes
+        result = self.handle_native(
+            {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 1.0})
+
+        self.assertEqual(result, {"ok": False, "error": "selection_changed"})
+        self.assert_saved(newer)
 
     def test_browser_ready_rejects_changed_selection(self):
         original = {

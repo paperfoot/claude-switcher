@@ -285,6 +285,20 @@ class NativeTransportTests(unittest.TestCase):
             self.assertEqual(_read_line(client, timeout=2), {"ok": False, "error": "browser_timeout"})
             self.assertLess(time.monotonic() - started, 1.0)
 
+    def test_switch_selection_stamp_is_forwarded_and_validated(self):
+        host = self.start_host()
+        with self.connect() as client:
+            client.sendall(b'{"id":"s1","command":"switch","email":"one@example.com","selectedAt":1234.5}\n')
+            forwarded = _read_native(host.proc.stdout)
+            self.assertEqual(forwarded["selectedAt"], 1234.5)
+            host.write_native({"type": "result", "id": "s1", "result": {"ok": True}})
+            self.assertEqual(_read_line(client), {"ok": True})
+            for stamp in ('"x"', "true", "-1", "0"):
+                with self.subTest(stamp=stamp):
+                    client.sendall(('{"id":"s2","command":"switch","email":"one@example.com",'
+                                    '"selectedAt":' + stamp + '}\n').encode())
+                    self.assertEqual(_read_line(client), {"ok": False, "error": "invalid_request"})
+
     def test_switch_without_time_to_restore_is_refused_without_forwarding(self):
         host = self.start_host()
         deadline = (time.time() + native_transport.BROWSER_ROLLBACK_GRACE - 5) * 1000

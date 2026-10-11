@@ -41,11 +41,11 @@ class StatefulSender:
         self.switch_seconds = switch_seconds
         self.lock = threading.Lock()
 
-    def __call__(self, path, command, email, timeout=None, deadline=None):
+    def __call__(self, path, command, email, timeout=None, deadline=None, selected_at=None):
         path = Path(path)
         with self.lock:
             self.calls.append((path, command, email))
-            self.options.append((path, command, email, timeout, deadline))
+            self.options.append((path, command, email, timeout, deadline, selected_at))
         if command == "status":
             return dict(self.states[path])
 
@@ -63,6 +63,9 @@ class StatefulSender:
 
     def switch_deadlines(self):
         return [option[4] for option in self.options if option[1] == "switch"]
+
+    def switch_stamps(self):
+        return [(option[0], option[2], option[5]) for option in self.options if option[1] == "switch"]
 
     def status_timeouts(self):
         return [option[3] for option in self.options if option[1] == "status"]
@@ -161,6 +164,23 @@ class BrowserProfilesTests(unittest.TestCase):
         self.assertEqual(sender.states[self.one]["email"], OLD_ONE)
         self.assertEqual(sender.states[self.two]["email"], OLD_TWO)
         self.assertIn((self.one, "switch", OLD_ONE), sender.switch_calls())
+
+    def test_forward_switches_carry_the_selection_stamp_and_rollbacks_do_not(self):
+        sender = StatefulSender(
+            {
+                self.one: {"ok": True, "email": OLD_ONE},
+                self.two: {"ok": True, "email": OLD_TWO},
+            },
+            {(self.two, TARGET): [{"ok": False, "error": "web_login_needed"}]},
+        )
+
+        result = self.run_switch([self.one, self.two], sender, expected_profiles=2, selected_at=7.5)
+
+        self.assertTrue(result["rolledBack"])
+        self.assertEqual(
+            sender.switch_stamps(),
+            [(self.one, TARGET, 7.5), (self.two, TARGET, 7.5), (self.one, OLD_ONE, None)],
+        )
 
     def test_identity_mismatch_fails_and_rolls_back(self):
         sender = StatefulSender(
@@ -341,10 +361,11 @@ class BrowserProfilesTests(unittest.TestCase):
             }
         )
 
-        def concurrent(path, command, email, timeout=None, deadline=None):
+        def concurrent(path, command, email, timeout=None, deadline=None, selected_at=None):
             if command == "status":
                 barrier.wait()
-            return sender(path, command, email, timeout=timeout, deadline=deadline)
+            return sender(path, command, email, timeout=timeout, deadline=deadline,
+                          selected_at=selected_at)
 
         with mock.patch.object(
             browser_profiles.profile_transport, "connection_paths",
