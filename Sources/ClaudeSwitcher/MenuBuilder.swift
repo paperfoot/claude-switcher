@@ -68,6 +68,8 @@ enum MenuBuilder {
         var browserConnected = false
         var switching = false
         var switchMessage: String?
+        /// A saved Chrome login that has expired or expires within days.
+        var loginWarning: String?
         var historyEnabled = false
         var historyBusy = false
         var historyMessage: String?
@@ -100,6 +102,7 @@ enum MenuBuilder {
         }
         if input.coordinated {
             if let message = input.switchMessage { menu.addItem(detailItem(message, id: "claude.status")) }
+            if let warning = input.loginWarning { menu.addItem(detailItem(warning, id: "claude.login-warning")) }
         }
         if !input.codexAccounts.isEmpty {
             menu.addItem(.separator())
@@ -195,7 +198,8 @@ enum MenuBuilder {
         menu.items.first { $0.identifier?.rawValue == "codex.cancel-login" }?.isEnabled = input.codexConnecting
         menu.items.first { $0.identifier?.rawValue == installItemID }?.isEnabled = !input.isBusy && input.updateProgress == nil
         menu.items.first { $0.identifier?.rawValue == quitItemID }?.isEnabled = input.updateProgress == nil
-        let details = [(id: "claude.status", text: input.switchMessage), (id: "codex.status", text: input.codexMessage)]
+        let details = [(id: "claude.status", text: input.switchMessage), (id: "claude.login-warning", text: input.loginWarning),
+                       (id: "codex.status", text: input.codexMessage)]
         for (id, text) in details + desktopDetails(input) {
             let item = menu.items.first { $0.identifier?.rawValue == id }
             (item?.view as? MenuDetailView)?.update(text: text ?? "")

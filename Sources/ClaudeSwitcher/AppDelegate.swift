@@ -39,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastCoordinatedCheck: Date = .distantPast
     private var coordinatedGeneration = 0
     private var selectedEmailOverride: String?
+    /// Shown under the Claude accounts while a saved Chrome login is about to expire.
+    private var loginWarning: String?
     /// Automatic switching waits after a manual choice, so it never overrides one at once.
     private var lastManualSwitch: Date = .distantPast
     private var usageRefreshTimer: Timer?
@@ -258,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             browserConnected: coordinatedSnapshot?.browser.ok == true,
             switching: isSwitchingAccount || desktopHistory?.busy == true,
             switchMessage: switchMessage,
+            loginWarning: loginWarning,
             historyEnabled: desktopHistory?.enabled ?? false,
             historyBusy: desktopHistory?.busy ?? false,
             historyMessage: desktopHistory?.message
@@ -479,6 +482,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 coordinatedSnapshot = result
                 selectedEmailOverride = nil
                 let now = Date()
+                loginWarning = Self.loginWarning(browser: result.browser,
+                                                 emails: config.profiles.compactMap(\.expectedEmail), now: now)
                 for profile in config.profiles {
                     guard let email = profile.expectedEmail,
                           let row = result.accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { continue }
@@ -494,6 +499,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             rebuildIfVisible()
             scheduleUsageRefresh()
         }
+    }
+
+    /// Saved Chrome logins expire on their own; warn three days ahead, so a switch never
+    /// lands on a dead session.
+    private static func loginWarning(browser: CoordinatedSnapshot.Browser, emails: [String], now: Date) -> String? {
+        let soon = emails.compactMap { email -> (email: String, expiry: Date)? in
+            guard let expiry = browser.loginExpiry(email: email),
+                  expiry < now.addingTimeInterval(3 * 86_400) else { return nil }
+            return (email, expiry)
+        }.sorted { $0.expiry < $1.expiry }
+        guard let first = soon.first else { return nil }
+        if soon.count > 1 { return "\(soon.count) Chrome logins expire soon · sign in to them again in Chrome" }
+        let when = first.expiry <= now ? "has expired" : "expires \(MenuBuilder.clock(first.expiry, now: now))"
+        return "Chrome login for \(first.email) \(when) · sign in again in Chrome"
     }
 
     @objc private func switchAccount(_ sender: NSMenuItem) {
@@ -517,7 +536,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             isSwitchingAccount = false
             switchMessage = result?.summary ?? "Could not switch accounts · try again"
             selectedEmailOverride = result?.codeEmail
-            statusFeedback?.finish(ok: result?.ok == true, browserReady: result?.browserReady == true,
+            // Code switched but a Chrome profile did not: amber, not red.
+            statusFeedback?.finish(ok: result?.codeSwitched == true, browserReady: result?.browserReady == true,
                                    email: email, message: switchMessage ?? "Switch failed") { [weak self = self] in
                 guard let self, self.coordinatedGeneration == generation else { return }
                 self.switchMessage = nil
