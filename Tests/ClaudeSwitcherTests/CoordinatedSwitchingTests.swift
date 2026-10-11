@@ -28,6 +28,15 @@ struct CoordinatedSwitchingTests {
         #expect(result.summary == "Code switched · Chrome is not responding")
     }
 
+    @Test func savedChromeLoginExpiriesAreDecoded() throws {
+        let json = #"{"accounts":[],"codeEmail":null,"browser":{"ok":true,"email":"one@example.com","accounts":["one@example.com"],"expiries":{"one@example.com":1790000000.5}}}"#
+        let browser = try JSONDecoder().decode(CoordinatedSnapshot.self, from: Data(json.utf8)).browser
+        #expect(browser.loginExpiry(email: "ONE@example.com") == Date(timeIntervalSince1970: 1_790_000_000.5))
+        #expect(browser.loginExpiry(email: "two@example.com") == nil)
+        let older = #"{"accounts":[],"browser":{"ok":false}}"#
+        #expect(try JSONDecoder().decode(CoordinatedSnapshot.self, from: Data(older.utf8)).browser.expiries == nil)
+    }
+
     private func result(_ json: String) throws -> CoordinatedResult {
         try JSONDecoder().decode(CoordinatedResult.self, from: Data(json.utf8))
     }
