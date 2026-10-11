@@ -7,7 +7,7 @@ Investigated 2 October 2026 against the official Claude extension, ID `fcoeoabgf
 | Surface | What changes today |
 | --- | --- |
 | Claude Code's default CLI account | The switcher changes saved credentials. Existing processes retain their current session. |
-| Claude.ai in Chrome | The companion restores and verifies cookies in every connected regular profile. |
+| Claude.ai in Chrome | The companion restores and verifies cookies in every connected regular profile. A profile that was closed or failed catches up when it reconnects. |
 | Official Claude Chrome extension | Its account remains separate. |
 | Claude Desktop | Its account remains separate. |
 
@@ -19,7 +19,7 @@ The installed manifest accepts external messages from Claude web origins, with n
 
 ## Our side
 
-Each Chrome profile runs its own native host with its own private socket under `~/.config/claude-switcher/browsers/`. A switch contacts every connected profile and restores the profiles already changed if another one rejects the selection.
+Each Chrome profile runs its own native host with its own private socket under `~/.config/claude-switcher/browsers/`. A switch contacts every connected profile and restores the profiles already changed if another one rejects the selection. Each profile remembers, in its own extension storage, the newest selection it applied; it stores no cookies or email addresses there. A profile that was closed during a switch, or was restored because another profile failed, adopts the selection when it reconnects. A later manual sign-in in that profile, including through **Add another account**, or a Chrome-only switch is kept instead.
 
 ## What remains for the official extension
 
