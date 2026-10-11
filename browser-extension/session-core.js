@@ -1,6 +1,12 @@
 // Browser operations are injected so the complete switch can be tested without real logins.
+// Errors that can reach the popup carry a snake_case `code` it maps, plus readable text.
+export function failure(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 export function emailKey(value) {
-  if (typeof value !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) || value.length > 254) throw new Error('Invalid account email');
+  if (typeof value !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) || value.length > 254) throw failure('invalid_data', 'Invalid account email');
   return value.toLowerCase();
 }
 export function claudeCookie(cookie) {
@@ -11,7 +17,7 @@ export function browserScopedCookie(cookie) {
   return ['__cf_bm', '_cfuvid', 'cf_clearance', 'ion-vk', 'anthropic-device-id'].includes(cookie.name);
 }
 export function cookieDetails(cookie) {
-  if (!claudeCookie(cookie) || typeof cookie.value !== 'string' || typeof cookie.name !== 'string') throw new Error('Invalid saved cookie');
+  if (!claudeCookie(cookie) || typeof cookie.value !== 'string' || typeof cookie.name !== 'string') throw failure('invalid_data', 'Invalid saved cookie');
   const domain = cookie.domain.replace(/^\./, '');
   const result = {url: `https://${domain}${cookie.path || '/'}`, name: cookie.name, value: cookie.value,
     path: cookie.path || '/', secure: true, httpOnly: Boolean(cookie.httpOnly), storeId: cookie.storeId};
@@ -106,11 +112,11 @@ export class SessionSwitcher {
   async capture() {
     // Never attribute current cookies to a remembered selection. Users can sign in manually.
     const before = await this.probe();
-    if (!before) throw new Error('Sign in to Claude.ai, then save this account');
+    if (!before) throw failure('web_signed_out', 'Sign in to Claude.ai, then save this account');
     const cookies = (await this.browser.cookies()).filter(claudeCookie);
-    if (!validSession(cookies)) throw new Error('This Claude login has expired');
+    if (!validSession(cookies)) throw failure('web_login_expired', 'This Claude login has expired');
     const after = await this.probe();
-    if (after !== before) throw new Error('Account changed while saving; try again');
+    if (after !== before) throw failure('web_identity_changed', 'Account changed while saving; try again');
     return {email: emailKey(before), cookies, savedAt: Date.now(), url: await this.browser.currentURL()};
   }
   save() { return this.serialize(async () => {

@@ -1,4 +1,4 @@
-import {SessionSwitcher, SelectionMemory, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
+import {SessionSwitcher, SelectionMemory, failure, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
 const HOST = 'org.paperfoot.claude_switcher';
 // A catch-up switch has no waiting caller; bound it like a menu switch.
 const CATCH_UP_MS = 120_000;
@@ -21,15 +21,23 @@ const requests = new Map();
 // so the local cookies are only rolled back once the companion has given up too.
 const SELECT_BUDGET_MS = 150_000;
 const SELECT_REPLY_MS = 180_000;
-function native(action, payload={}, timeoutMs=30000) {
+function native(action, payload = {}, timeoutMs = 30000) {
   if (!port) connect();
-  if (!port) return Promise.reject(new Error(connectionError));
+  if (!port) return Promise.reject(failure('native_unavailable', connectionError));
   const id = crypto.randomUUID();
-  return new Promise((resolve,reject) => {
-    const timeout=setTimeout(()=>{requests.delete(id);reject(new Error('Companion did not respond'));},timeoutMs);
-    requests.set(id,{resolve,reject,timeout});
-    try {port.postMessage({type:'request',id,action,...payload});}
-    catch {clearTimeout(timeout);requests.delete(id);reject(new Error('Companion disconnected'));}
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      requests.delete(id);
+      reject(failure('native_timeout', 'Companion did not respond'));
+    }, timeoutMs);
+    requests.set(id, {resolve, reject, timeout});
+    try {
+      port.postMessage({type: 'request', id, action, ...payload});
+    } catch {
+      clearTimeout(timeout);
+      requests.delete(id);
+      reject(failure('native_disconnected', 'Companion disconnected'));
+    }
   });
 }
 async function probe() {
@@ -62,7 +70,7 @@ const browser = {
     for(const c of await this.cookies()) {
       if(!claudeCookie(c) || browserScopedCookie(c)) continue;
       const removed=await chrome.cookies.remove({url:`https://${c.domain.replace(/^\./,'')}${c.path||'/'}`,name:c.name,storeId:c.storeId,...(c.partitionKey?{partitionKey:c.partitionKey}:{})});
-      if(!removed) throw new Error('Could not clear Claude session');
+      if(!removed) throw failure('web_switch_failed', 'Could not clear Claude session');
     }
   },
   set:details=>chrome.cookies.set(details),
@@ -209,7 +217,7 @@ function connect() {
       if(port!==p)return;
       connectionError=chrome.runtime.lastError?.message || 'Companion disconnected';
       port=null;
-      for(const {reject,timeout} of requests.values()){clearTimeout(timeout);reject(new Error('Companion disconnected'));}
+      for(const {reject,timeout} of requests.values()){clearTimeout(timeout);reject(failure('native_disconnected', 'Companion disconnected'));}
       requests.clear();
     });
     p.onMessage.addListener(async message=>{
@@ -217,8 +225,12 @@ function connect() {
       if(message.type==='response'){
         const pending=requests.get(message.id); if(!pending)return;
         requests.delete(message.id);clearTimeout(pending.timeout);
-        if(message.result?.ok===false && !message.result.partial) pending.reject(new Error(message.result.error||'Companion error'));
-        else pending.resolve(message.result);
+        const result = message.result;
+        if (result?.ok === false && !result.partial) {
+          pending.reject(failure(result.error || 'unknown_error', result.message || result.error || 'Companion error'));
+        } else {
+          pending.resolve(result);
+        }
       } else if(message.type==='command'){
         incomingCommands++;
         let result;
@@ -271,8 +283,10 @@ chrome.runtime.onMessage.addListener((msg,sender,send)=>{
     await selections.manualLogin().catch(() => {});
     return switcher.newLogin();
   };
-  const work=action==='save'?saveCurrentSession():action==='newLogin'?newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(new Error('Unknown action'));
-  work.then(result=>send(result)).catch(error=>send({ok:false,error:error.message})); return true;
+  const work=action==='save'?saveCurrentSession():action==='newLogin'?newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(failure('unknown_action', 'Unknown action'));
+  // The popup maps `error`, always a code; `message` is only a fallback for people.
+  work.then(result => send(result)).catch(error => send({ok: false, error: error?.code || 'unknown_error', message: error?.message}));
+  return true;
 });
 let saveTimer;
 chrome.cookies.onChanged.addListener(change=>{
