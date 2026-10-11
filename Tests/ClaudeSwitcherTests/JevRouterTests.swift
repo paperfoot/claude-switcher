@@ -255,3 +255,35 @@ struct JevKeyStoreTests {
         #expect(JevKeyStore.load(from: storage) == nil)
     }
 }
+
+@Suite("Jev key loading")
+struct JevKeyLoadingTests {
+    @Test("A stored router reads its key only when Jev is asked")
+    func lazyKey() async throws {
+        let reads = Counter()
+        let router = JevRouter(keySource: { reads.increment(); return "key" },
+                               transport: { _ in throw JevError.timedOut })
+        #expect(reads.value == 0)
+        _ = try? await router.interpret("anything", candidates: [
+            PaletteSuggestion(id: "quit", action: .command(.quit), title: "Quit Claude Switcher", symbol: "power", score: 1)
+        ], context: PaletteContext())
+        #expect(reads.value == 1)
+    }
+
+    @Test("A missing key fails the request instead of sending one without it")
+    func missingKey() async {
+        let router = JevRouter(keySource: { nil }, transport: { _ in Issue.record("no request expected"); throw JevError.timedOut })
+        await #expect(throws: JevError.noKey) {
+            _ = try await router.interpret("anything", candidates: [
+                PaletteSuggestion(id: "quit", action: .command(.quit), title: "Quit Claude Switcher", symbol: "power", score: 1)
+            ], context: PaletteContext())
+        }
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
+}
