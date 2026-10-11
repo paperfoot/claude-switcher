@@ -1,13 +1,13 @@
 # Switching the official Claude Chrome extension
 
-Investigated 2 October 2026. The installed Chrome profiles contain the same official Claude extension, version 1.0.98, ID `fcoeoabgfenejglbffodgkkbkcdhcgfn`.
+Investigated 2 October 2026 against the official Claude extension, ID `fcoeoabgfenejglbffodgkkbkcdhcgfn`, version 1.0.98. The installed Chrome profiles contain the same extension; they now run version 1.0.100. Recheck the details below against each new vendor version.
 
 ## Current behavior
 
 | Surface | What changes today |
 | --- | --- |
 | Claude Code's default CLI account | The switcher changes saved credentials. Existing processes retain their current session. |
-| Claude.ai in Chrome | The companion restores and verifies cookies in one connected regular profile. |
+| Claude.ai in Chrome | The companion restores and verifies cookies in every connected regular profile. |
 | Official Claude Chrome extension | Its account remains separate. |
 | Claude Desktop | Its account remains separate. |
 
@@ -17,16 +17,16 @@ Its refresh token renews the current OAuth account independently of web cookies.
 
 The installed manifest accepts external messages from Claude web origins, with no extension IDs allowed. The external handler supports an OAuth callback only when a matching sign-in is already in progress. It exposes no account-switch command for the companion. Chrome documents this isolation in [externally_connectable](https://developer.chrome.com/docs/extensions/reference/manifest/externally-connectable).
 
-Our own native bridge is another limitation: `bridge/native_transport.py` owns one socket and rejects another native-host instance. Its messages have no profile ID. `browser-extension/background.js` changes cookies in the current profile only.
+## Our side
 
-## What a complete implementation needs
+Each Chrome profile runs its own native host with its own private socket under `~/.config/claude-switcher/browsers/`. A switch contacts every connected profile and restores the profiles already changed if another one rejects the selection.
 
-1. A separate connection and stable ID for each enrolled Chrome profile, including reconnect after Chrome closes.
-2. Verified website switching in each profile, with per-profile results and recovery after partial failure.
-3. The official extension's normal sign-in flow in each profile, followed by verification of its account. The installed extension exposes no supported headless switch API.
-4. Reconnection of Claude Code's browser integration after an account change, followed by selection and verification of the intended browser profile.
+## What remains for the official extension
 
-UI automation could perform step 3, but this remains an untested integration and may require visible OAuth approval. A cookie-only success must never be reported as an extension switch. Editing Chrome's live storage or shipping a patched copy of Anthropic's extension would introduce corruption, token-refresh, and update risks.
+1. The official extension's normal sign-in flow in each profile, followed by verification of its account. The installed extension exposes no supported headless switch API.
+2. Reconnection of Claude Code's browser integration after an account change, followed by selection and verification of the intended browser profile.
+
+UI automation could perform step 1, but this remains an untested integration and may require visible OAuth approval. A cookie-only success must never be reported as an extension switch. An earlier prototype patched a copy of the official extension pinned to version 1.0.98; it has been removed because it no longer matches the installed version. Editing Chrome's live storage or shipping a patched copy of Anthropic's extension would introduce corruption, token-refresh, and update risks. The official extension keeps its own sign-in.
 
 ## Current reports
 
@@ -36,4 +36,4 @@ UI automation could perform step 3, but this remains an untested integration and
 
 [Issue #94764](https://github.com/anthropics/claude-code/issues/94764) reports stale pairing after moving from a personal account to Teams. It is evidence that account identity and browser pairing both need verification, not a reason to reinstall the extension during every switch.
 
-This investigation inspected static extension code and the switcher, and checked current documentation and user reports. It did not change browser logins, inspect private token storage, or validate a complete multi-profile account switch.
+This investigation inspected static extension code and the switcher, and checked current documentation and user reports. It did not change browser logins, inspect private token storage, or validate a complete multi-profile switch of the official extension.
