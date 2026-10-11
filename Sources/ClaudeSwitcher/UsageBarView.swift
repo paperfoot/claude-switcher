@@ -139,6 +139,61 @@ final class UsageBarView: NSView {
         NSBezierPath(roundedRect: used, xRadius: 1.5, yRadius: 1.5).fill()
     }
 
+    // MARK: - Preview
+
+    /// Draws account titles with their gauge rows on a menu-like rounded card and writes a
+    /// PNG at twice the point size, for README screenshots and visual checks. Every row comes
+    /// from the caller; nothing here invents data.
+    static func renderPreview(rowsPerAccount accounts: [(title: String, rows: [Row])],
+                              appearance name: NSAppearance.Name, to url: URL) throws {
+        let padding: CGFloat = 6
+        let scale: CGFloat = 2
+        let size = NSSize(width: preferredWidth, height: padding * 2 + CGFloat(accounts.count) * rowHeight * 2)
+        guard let appearance = NSAppearance(named: name),
+              let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale),
+                                            pixelsHigh: Int(size.height * scale), bitsPerSample: 8,
+                                            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else { throw CocoaError(.fileWriteUnknown) }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        appearance.performAsCurrentDrawingAppearance {
+            let transform = NSAffineTransform()
+            transform.scale(by: scale)
+            transform.concat()
+            let card = NSRect(origin: .zero, size: size)
+            previewBackground.setFill()
+            NSBezierPath(roundedRect: card, xRadius: 10, yRadius: 10).fill()
+            NSColor.separatorColor.setStroke()
+            NSBezierPath(roundedRect: card.insetBy(dx: 0.5, dy: 0.5), xRadius: 9.5, yRadius: 9.5).stroke()
+
+            let title: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.labelColor]
+            var y = size.height - padding
+            for account in accounts {
+                y -= rowHeight
+                let text = account.title as NSString
+                text.draw(at: NSPoint(x: titleInset, y: y + (rowHeight - text.size(withAttributes: title).height) / 2),
+                          withAttributes: title)
+                y -= rowHeight
+                let gauges = UsageBarView(rows: account.rows)
+                NSGraphicsContext.saveGraphicsState()
+                let offset = NSAffineTransform()
+                offset.translateX(by: 0, yBy: y)
+                offset.concat()
+                gauges.draw(gauges.bounds)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        // Point size in the metadata, so the PNG opens at its menu size on a Retina display.
+        bitmap.size = size
+        guard let png = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+        try png.write(to: url, options: .atomic)
+    }
+
+    /// Close to the opaque menu material in each appearance.
+    private static let previewBackground = adaptiveColor(light: (0.95, 0.95, 0.96), dark: (0.16, 0.16, 0.17))
+
     private static func color(for level: UsageLevel) -> NSColor {
         switch level {
         case .normal: return healthyColor
