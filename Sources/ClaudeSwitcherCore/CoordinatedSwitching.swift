@@ -30,6 +30,15 @@ public struct CoordinatedSnapshot: Decodable, Sendable {
         public let ok: Bool
         public let email: String?
         public let accounts: [String]?
+        /// When each saved Chrome login expires, in Unix seconds, keyed by email.
+        public let expiries: [String: Double]?
+
+        /// When the saved Chrome login for `email` stops working, if known.
+        public func loginExpiry(email: String) -> Date? {
+            guard let seconds = expiries?.first(where: { $0.key.caseInsensitiveCompare(email) == .orderedSame })?.value,
+                  seconds.isFinite else { return nil }
+            return Date(timeIntervalSince1970: seconds)
+        }
     }
     public let accounts: [Account]
     public let codeEmail: String?
