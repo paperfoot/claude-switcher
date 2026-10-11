@@ -252,6 +252,24 @@ class BrowserProfilesTests(unittest.TestCase):
         self.assertEqual(sender.states[self.two]["email"], TARGET)
         self.assertNotIn(self.one, [call[0] for call in sender.calls])
 
+    def test_status_merges_saved_login_expiries_across_profiles(self):
+        sender = StatefulSender(
+            {
+                self.one: {"ok": True, "email": OLD_ONE,
+                           "expiries": {OLD_ONE: 100.0, OLD_TWO: 200.0}},
+                self.two: {"ok": True, "email": OLD_ONE,
+                           "expiries": {OLD_ONE: 150.0, TARGET: "soon", 7: 9.0}},
+            }
+        )
+        with mock.patch.object(
+            browser_profiles.profile_transport, "connection_paths",
+            return_value=[self.one, self.two],
+        ):
+            result = browser_profiles.status(self.base, sender=sender)
+
+        # The later value is the fresher read of the shared vault.
+        self.assertEqual(result["expiries"], {OLD_ONE: 150.0, OLD_TWO: 200.0})
+
     def test_busy_profile_counts_as_connected_in_status(self):
         sender = StatefulSender(
             {

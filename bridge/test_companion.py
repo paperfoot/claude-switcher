@@ -289,6 +289,60 @@ class CompanionTests(unittest.TestCase):
                     "Paperfoot Claude Switcher Web", TARGET_EMAIL, encoded)
         self.assertEqual(json.loads((self.base / "web-accounts.json").read_text()), [TARGET_EMAIL])
 
+    def test_vault_put_records_when_the_saved_login_expires_without_cookie_values(self):
+        self.base.mkdir(parents=True)
+        entry = self.web_entry(value="secret-session-value")
+        entry["cookies"] = [
+            {"name": "sessionKey", "value": "secret-session-value", "domain": ".claude.ai",
+             "session": False, "expirationDate": 2_000_000_100},
+            {"name": "sessionKeyLC", "value": "secret-lc", "domain": ".claude.ai",
+             "session": False, "expirationDate": 2_000_000_050.5},
+            {"name": "sessionKeyV3", "value": "secret-v3", "domain": ".claude.ai", "session": True},
+            {"name": "lastActiveOrg", "value": "org", "domain": ".claude.ai",
+             "session": False, "expirationDate": 1_000},
+        ]
+        result, _, _ = self.put_with_stored(None, entry)
+
+        self.assertTrue(result["ok"])
+        meta = (self.base / "web-accounts-meta.json").read_text()
+        self.assertEqual(json.loads(meta), {"expiries": {TARGET_EMAIL: 2_000_000_050.5}})
+        self.assertNotIn("secret", meta)
+        # Older companions keep reading the plain list.
+        self.assertEqual(json.loads((self.base / "web-accounts.json").read_text()), [TARGET_EMAIL])
+
+    def test_a_login_without_persistent_session_cookies_drops_its_expiry(self):
+        self.base.mkdir(parents=True)
+        self.put_with_stored(None, self.web_entry())
+        session_only = self.web_entry(value="key-2")
+        session_only["cookies"][0] = {"name": "sessionKey", "value": "key-2", "domain": ".claude.ai", "session": True}
+        self.put_with_stored(json.dumps(self.web_entry()), session_only)
+        self.assertEqual(json.loads((self.base / "web-accounts-meta.json").read_text()), {"expiries": {}})
+
+    def test_vault_list_reports_expiries_for_configured_saved_accounts(self):
+        self.base.mkdir(parents=True)
+        (self.base / "web-accounts.json").write_text(json.dumps([OLD_EMAIL, TARGET_EMAIL]))
+        (self.base / "web-accounts-meta.json").write_text(json.dumps({"expiries": {
+            TARGET_EMAIL: 1_900_000_000, OLD_EMAIL: 1_900_000_001,
+            "stranger@example.com": 1_900_000_002, "bad@example.com": "soon"}}))
+        with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
+            result = self.handle_native({"action": "vault_list"})
+        self.assertEqual(result, {"ok": True, "accounts": [TARGET_EMAIL],
+                                  "expiries": {TARGET_EMAIL: 1_900_000_000}})
+
+    def test_vault_list_without_expiry_metadata_still_lists_accounts(self):
+        self.base.mkdir(parents=True)
+        (self.base / "web-accounts.json").write_text(json.dumps([TARGET_EMAIL]))
+        for meta in (None, "{not json", "[]", '{"expiries": []}'):
+            with self.subTest(meta=meta):
+                path = self.base / "web-accounts-meta.json"
+                if meta is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(meta)
+                with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
+                    result = self.handle_native({"action": "vault_list"})
+                self.assertEqual(result, {"ok": True, "accounts": [TARGET_EMAIL], "expiries": {}})
+
     def test_read_state_tolerates_missing_corrupt_and_non_object_state(self):
         self.assertEqual(companion.read_state(), {})
 
