@@ -336,7 +336,9 @@ struct PaletteQuery {
             if let state = Self.stateWords[word] { desiredState = state }
             if Self.filler.contains(word) { continue }
             termIndexes.append(position)
-            if let verb = Self.verbs[word], !isAccountWord(word, true) {
+            // A destructive verb that also starts an account name ("del" for delta@) is
+            // read as the name, so vague input never makes Remove the default.
+            if let verb = Self.verbs[word], !isAccountWord(word, verb != .remove) {
                 verbs.insert(verb)
             } else if let product = Self.products[word], !isAccountWord(word, true) {
                 products.insert(product)
