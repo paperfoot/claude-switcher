@@ -84,6 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isPresentingModal = false
     private var pendingAlerts: [PendingAlert] = []
 
+    /// The single entry point for everything that used to live in Settings.
+    private var palette: CommandPaletteController?
+    private var paletteHotKey: GlobalHotKey?
+
+    private var autoSwitchTimer: Timer?
+    private var isAutoSwitching = false
+
     private static let actions = MenuBuilder.Actions(
         selectProfile: #selector(selectProfile(_:)),
         copyTerminalCommand: #selector(copyTerminalCommand(_:)),
@@ -132,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         item.menu = menu
         statusItem = item
+        configurePalette()
 
         // Claude's installer relaunches it with no arguments, so after an update only the
         // default profile comes back. Watch for instances going away, and for wake (a missed
@@ -150,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.outsideTriggerForReopen()
                 self?.refreshSignInStates(force: true)
                 self?.refreshCodex(force: true)
+                self?.scheduleAutoSwitch()
             }
         }
 
@@ -158,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.isSleeping = true
                 self?.usageRefreshTimer?.invalidate()
                 self?.codexTimer?.invalidate()
+                self?.autoSwitchTimer?.invalidate()
             }
         }
 
@@ -165,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshCodex(force: true)
         reconcileUpdateBlock()
         outsideTriggerForReopen()
+        scheduleAutoSwitch()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
@@ -259,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         let built = MenuBuilder.build(menuInput(), target: self, actions: Self.actions)
+        showPaletteShortcut(in: built)
         menu.minimumWidth = built.minimumWidth
         menu.showsStateColumn = true
         // An NSMenuItem belongs to one menu, so detach before re-parenting.
@@ -270,6 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func rebuildIfVisible() {
+        palette?.reload()
         guard isMenuOpen, let menu = statusItem?.menu else { return }
         MenuBuilder.updateVisible(in: menu, input: menuInput())
     }
@@ -1457,6 +1470,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Command palette
 
+    private func configurePalette() {
+        palette = CommandPaletteController(context: { [weak self] in self?.paletteContext() ?? PaletteContext() },
+                                           perform: { [weak self] in self?.performPalette($0) },
+                                           router: JevRouter.stored())
+        let hotKey = GlobalHotKey { [weak self] in self?.togglePalette() }
+        let wanted = GlobalHotKey.Shortcut(parsing: config.paletteShortcut) ?? .optionSpace
+        if !hotKey.register(wanted), wanted != .controlOptionCommandSpace {
+            _ = hotKey.register(.controlOptionCommandSpace)
+        }
+        paletteHotKey = hotKey
+    }
+
+    @objc private func openPalette(_ sender: Any?) { showPalette() }
+
+    private func togglePalette() {
+        if palette?.isVisible == true { palette?.close() } else { showPalette() }
+    }
+
+    /// Freshens the cheap probes the menu reads on opening, then shows the palette.
+    private func showPalette() {
+        guard let palette else { return }
+        reloadConfig()
+        running = InstanceManager.runningInstances(appPath: config.claudeAppPath)
+        blockedUpdate = UpdateProbe.status(appPath: config.claudeAppPath).blocked
+        // A key stored from the command line since launch takes effect on the next opening.
+        palette.router = JevRouter.stored()
+        refreshSignInStates()
+        refreshCodex()
+        palette.show()
+    }
+
+    /// The menu item shows the shortcut that actually registered, which may be the fallback.
+    private func showPaletteShortcut(in menu: NSMenu) {
+        guard let item = menu.items.first(where: { $0.identifier?.rawValue == MenuBuilder.paletteItemID }) else { return }
+        guard let equivalent = paletteHotKey?.shortcut?.menuKeyEquivalent else {
+            item.keyEquivalent = ""
+            return
+        }
+        item.keyEquivalent = equivalent.key
+        item.keyEquivalentModifierMask = equivalent.modifiers
+    }
+
+    private func toggleAutoSwitch() {
+        guard !isPresentingModal, !refuseWhileConfigIsBroken() else { return }
+        config.autoSwitch.toggle()
+        guard saveConfig(failureTitle: "Could not save the setting") else {
+            config.autoSwitch.toggle()
+            return
+        }
+        scheduleAutoSwitch()
+    }
+
+    // MARK: - Automatic switching
+
+    /// One claude-swap decision a minute. Its usage store paces the network polls (about one
+    /// per account every few minutes, faster near the threshold), so ticking often is cheap.
+    private func scheduleAutoSwitch() {
+        autoSwitchTimer?.invalidate()
+        autoSwitchTimer = nil
+        guard config.autoSwitch, !isSleeping, CoordinatedSetup.load()?.enabled == true else { return }
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoSwitchTick() }
+        }
+        timer.tolerance = 10
+        autoSwitchTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func autoSwitchTick() {
+        guard config.autoSwitch, !isAutoSwitching, !isSwitchingAccount, !codexBusy, !isSleeping,
+              // Never override a choice the user has just made.
+              Date().timeIntervalSince(lastManualSwitch) >= 600,
+              let setup = CoordinatedSetup.load(), setup.enabled else { return }
+        isAutoSwitching = true
+        let threshold = config.autoSwitchThreshold
+        Task {
+            let result = await Task.detached(priority: .utility) {
+                try? CoordinatedSwitching.autoTick(setup: setup, threshold: threshold)
+            }.value
+            isAutoSwitching = false
+            guard let result, result.switched == true, let email = result.codeEmail else { return }
+            coordinatedGeneration += 1
+            selectedEmailOverride = email
+            let browserReady = result.browserReady == true
+            // Kept until the next switch: an automatic change must never be silent.
+            switchMessage = "Switched automatically to \(email) at \(MenuBuilder.clock(Date(), now: Date()))"
+                + (browserReady ? "" : " · Chrome needs attention")
+            statusFeedback?.finish(ok: true, browserReady: browserReady, email: email,
+                                   message: switchMessage ?? "") {}
+            refreshCoordinatedAccounts(setup: setup, force: true)
+            rebuildIfVisible()
+        }
+    }
+
     /// The palette's view of the app, from the same state the menu shows. No I/O.
     private func paletteContext() -> PaletteContext {
         let coordinated = CoordinatedSetup.load()?.enabled == true
@@ -1491,13 +1598,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .pauseDesktopUpdates: config.blockClaudeUpdates,
         ]
         switch launchAtLoginState() {
-        case .enabled: toggles[.launchAtLogin] = true
-        case .disabled, .requiresApproval: toggles[.launchAtLogin] = false
+        // Registered but awaiting approval still counts as on: turning it off unregisters it.
+        case .enabled, .requiresApproval: toggles[.launchAtLogin] = true
+        case .disabled: toggles[.launchAtLogin] = false
         case .unavailable: break
         }
+        if coordinated { toggles[.autoSwitch] = config.autoSwitch }
+        // Same rule as the menu: only offer an install that is waiting on running profiles.
+        let update = running.isEmpty || updateProgress != nil ? nil : blockedUpdate
         return PaletteContext(accounts: accounts, desktopProfiles: desktop, toggles: toggles,
-                              stagedUpdateVersion: running.isEmpty ? nil : blockedUpdate.map { "\($0.staged)" },
-                              coordinated: coordinated, jevAvailable: false)
+                              stagedUpdateVersion: update.map { "\($0.staged)" },
+                              coordinated: coordinated, jevAvailable: palette?.router != nil,
+                              autoSwitchThreshold: Int(config.autoSwitchThreshold.rounded()))
     }
 
     /// Runs a palette choice through the same paths as the old menu items, including their
@@ -1519,6 +1631,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .shareHistory: desktopHistory?.toggle()
             case .reopenAfterUpdate: toggleReopenAfterUpdate(nil)
             case .pauseDesktopUpdates: toggleBlockUpdates(nil)
+            case .autoSwitch: toggleAutoSwitch()
             }
         case .command(let command):
             switch command {
@@ -1530,6 +1643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .chooseClaudeApp: chooseClaudeApp(nil)
             case .installUpdate: installUpdate(nil)
             case .refreshUsage:
+                nextUsageRefresh = [:]
                 refreshSignInStates(force: true)
                 refreshCodex(force: true)
             case .quit: NSApp.terminate(nil)

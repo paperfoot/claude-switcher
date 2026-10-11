@@ -26,6 +26,18 @@ final class GlobalHotKey {
         static let controlOptionCommandSpace = Shortcut(keyCode: UInt32(kVK_Space),
                                                         modifiers: UInt32(controlKey | optionKey | cmdKey))
 
+        /// The same chord as a menu item key equivalent, for display. `nil` for keys other than
+        /// Space, which the menu shows without a hint.
+        var menuKeyEquivalent: (key: String, modifiers: NSEvent.ModifierFlags)? {
+            guard keyCode == UInt32(kVK_Space) else { return nil }
+            var flags: NSEvent.ModifierFlags = []
+            if modifiers & UInt32(controlKey) != 0 { flags.insert(.control) }
+            if modifiers & UInt32(optionKey) != 0 { flags.insert(.option) }
+            if modifiers & UInt32(shiftKey) != 0 { flags.insert(.shift) }
+            if modifiers & UInt32(cmdKey) != 0 { flags.insert(.command) }
+            return (" ", flags)
+        }
+
         /// Reads "option+space", "ctrl+opt+cmd+k", "⌥Space" or "⌃⌥⌘ Space". Needs at least one
         /// modifier unless the key is a function key.
         init?(parsing text: String) {

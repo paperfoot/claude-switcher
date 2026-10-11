@@ -17,12 +17,14 @@ USAGE
   claude-switcher --history-plan  Preview a local Desktop history transfer.
   claude-switcher --history-enable  Enable sharing after Desktop account changes.
   claude-switcher --login-item on|off|status  Set or check launch at login.
+  claude-switcher --set-typesafe-key  Store a TypeSafe API key from stdin for Jev requests.
+  claude-switcher --remove-typesafe-key  Remove the stored TypeSafe key.
   claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
 
-After coordinated setup, click an email to select it for Chrome and the next Claude Code launch.
+Press ⌥Space anywhere (or choose Command… in the menu) and type an account or a command.
 Tiny gauges show usage consumed, with exact reset times from Anthropic.
-Desktop profiles and Code history sharing are under Settings → Claude Desktop.
+Desktop profiles, Code history sharing and update helpers are commands in the palette.
 Desktop and terminal sign-ins are separate.
 
 CONFIG
@@ -184,6 +186,54 @@ if commandLineArguments.contains("--history-plan") {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         FileHandle.standardOutput.write(try encoder.encode(result)); print(); exit(result.ok ? 0 : 1)
     } catch { print("{\"ok\":false,\"error\":\"history_unavailable\"}"); exit(1) }
+}
+
+// The key arrives on stdin, so it never appears in shell history or the process list.
+if commandLineArguments.contains("--set-typesafe-key") {
+    let key = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !key.isEmpty else { print("Pipe the TypeSafe API key on standard input."); exit(2) }
+    do { try JevKeyStore.save(key); print("TypeSafe key saved. Open the palette again to use Jev."); exit(0) }
+    catch { print("The key could not be saved in the Keychain."); exit(1) }
+}
+
+if commandLineArguments.contains("--remove-typesafe-key") {
+    do { try JevKeyStore.remove(); print("TypeSafe key removed."); exit(0) }
+    catch { print("The key could not be removed from the Keychain."); exit(1) }
+}
+
+/// Renders the palette with fictional accounts, for the README.
+if let index = commandLineArguments.firstIndex(of: "--palette-preview"),
+   commandLineArguments.index(after: index) < commandLineArguments.endIndex {
+    let directory = URL(fileURLWithPath: commandLineArguments[commandLineArguments.index(after: index)], isDirectory: true)
+    let example = PaletteContext(
+        accounts: [
+            PaletteAccount(product: .claude, id: "work", email: "work@example.com", isSelected: true, fiveHourUsed: 96, weekUsed: 71),
+            PaletteAccount(product: .claude, id: "personal", email: "personal@example.com", fiveHourUsed: 12, weekUsed: 34),
+            PaletteAccount(product: .claude, id: "team", email: "team199@example.org", fiveHourUsed: 0, weekUsed: 88),
+            PaletteAccount(product: .claude, id: "lab", email: "lab-alpha@example.net", needsSignIn: true),
+            PaletteAccount(product: .codex, id: "personal@example.com", email: "personal@example.com", isSelected: true, weekUsed: 5),
+            PaletteAccount(product: .codex, id: "work@example.com", email: "work@example.com", weekUsed: 98),
+        ],
+        toggles: [.launchAtLogin: true, .autoSwitch: true, .shareHistory: false],
+        coordinated: true)
+    MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for (look, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                try CommandPaletteController.renderPreview(context: example, query: "per", appearance: appearance,
+                                                           to: directory.appendingPathComponent("palette-\(look).png"))
+                try CommandPaletteController.renderPreview(context: example, query: "", appearance: appearance,
+                                                           to: directory.appendingPathComponent("palette-empty-\(look).png"))
+            }
+            print(directory.path)
+            exit(0)
+        } catch {
+            print("Preview failed: \(error.localizedDescription)")
+            exit(1)
+        }
+    }
 }
 
 if commandLineArguments.contains("--help") || commandLineArguments.contains("-h") {
