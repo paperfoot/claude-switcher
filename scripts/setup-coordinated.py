@@ -376,6 +376,26 @@ def install_components(
     return extension, launcher
 
 
+def restart_native_hosts(helper: Path) -> int:
+    """Stop native hosts still running the previous bridge. Each Chrome profile's companion
+    reconnects within a minute and starts a host with the new code."""
+    try:
+        listing = subprocess.run(["/bin/ps", "-axo", "pid=,command="], capture_output=True, text=True,
+                                 timeout=10, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    stopped = 0
+    for line in listing.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if f"{helper} native" in command:
+            try:
+                os.kill(int(pid), 15)
+                stopped += 1
+            except (ValueError, OSError):
+                pass
+    return stopped
+
+
 def main() -> int:
     args = parse_args()
     app = absolute_path(args.app)
@@ -391,6 +411,7 @@ def main() -> int:
         profiles = read_profiles(config_path)
         accounts = import_profiles(cswap, profiles)
         extension, host = install_components(app, python, cswap, claude, config_path)
+        restarted = restart_native_hosts(host.parent / "Bridge" / "companion.py")
     except ProfileImportError as exc:
         for email in exc.emails:
             print(f"Failed to import profile {email}.", file=sys.stderr)
@@ -409,6 +430,7 @@ def main() -> int:
                 "accounts": accounts,
                 "extensionPath": str(extension),
                 "hostPath": str(host),
+                "restartedHosts": restarted,
             },
             separators=(",", ":"),
             ensure_ascii=False,
