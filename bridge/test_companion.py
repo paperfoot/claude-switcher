@@ -913,6 +913,62 @@ class CompanionTests(unittest.TestCase):
         self.assertNotIn(TARGET_EMAIL, log_text)
         self.assertNotIn('must-not-appear', log_text)
 
+    def assert_code(self, result, code):
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["error"], code)
+        self.assertRegex(result["error"], r"^[a-z_]+$")
+        self.assertIn(code, companion.event_log.ERRORS)
+        self.assertIsInstance(result["message"], str)
+
+    def test_native_failures_carry_a_code_and_separate_text(self):
+        locked = mock.Mock()
+        locked.get_password.side_effect = RuntimeError("security: User interaction is not allowed.")
+        self.assert_code(
+            self.handle_native({"action": "vault_get", "email": TARGET_EMAIL}, keychain=locked),
+            "keychain_unavailable")
+        self.assert_code(
+            self.handle_native({"action": "vault_put", "entry": {
+                "email": TARGET_EMAIL, "cookies": [{"name": "sessionKey", "domain": ".example.com"}]}}),
+            "invalid_data")
+        self.assert_code(self.handle_native({"action": "vault_put", "entry": "not an entry"}), "invalid_data")
+        self.validate_email.side_effect = ValueError("unknown_account")
+        self.assert_code(
+            self.handle_native({"action": "vault_get", "email": "stranger@example.com"}), "unknown_account")
+        self.validate_email.side_effect = lambda email: email.lower()
+        with mock.patch.object(companion, "select_account", side_effect=RuntimeError("boom")):
+            self.assert_code(self.handle_native({"action": "select", "email": TARGET_EMAIL}),
+                             "backend_unavailable")
+        with mock.patch.dict(sys.modules, {"claude_swap": None}):
+            self.assert_code(companion.handle_native({"action": "vault_list"}), "backend_unavailable")
+        logged = [event["error"] for event in companion.event_log.recent(self.base)]
+        self.assertIn("keychain_unavailable", logged)
+        self.assertNotIn("User interaction", (self.base / "events.jsonl").read_text())
+
+    def run_main(self, *arguments):
+        output = io.StringIO()
+        with (
+            mock.patch.object(companion.sys, "argv", ["companion.py", *arguments]),
+            redirect_stdout(output),
+        ):
+            try:
+                companion.main()
+                status = 0
+            except SystemExit as exit:
+                status = exit.code
+        return json.loads(output.getvalue()), status
+
+    def test_command_line_failures_carry_a_code_and_separate_text(self):
+        with mock.patch.object(companion, "select_account", side_effect=RuntimeError("boom")):
+            result, status = self.run_main("switch", TARGET_EMAIL)
+        self.assert_code(result, "backend_unavailable")
+        self.assertEqual(status, 1)
+        with mock.patch.object(companion, "select_account", side_effect=ValueError("unknown_account")):
+            result, _ = self.run_main("switch", "stranger@example.com")
+        self.assert_code(result, "unknown_account")
+        result, status = self.run_main("switch")
+        self.assert_code(result, "invalid_request")
+        self.assertEqual(status, 1)
+
     def test_browser_only_refuses_during_another_account_switch(self):
         self.base.mkdir()
         with open(self.base / 'switch.lock', 'a') as lock:

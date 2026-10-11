@@ -255,6 +255,25 @@ class EventLogTests(unittest.TestCase):
         assert base.read_text(encoding="utf-8") == "occupied"
 
 
+    def test_every_error_code_the_bridge_or_extension_returns_is_whitelisted(self) -> None:
+        import re
+
+        root = Path(__file__).resolve().parent.parent
+        sources = [path for path in (root / "bridge").glob("*.py") if not path.name.startswith("test_")]
+        sources += [path for path in (root / "browser-extension").glob("*.js") if ".test." not in path.name]
+        patterns = (
+            r"""['"]error['"]\s*:\s*['"]([a-z_]+)['"]""",
+            r"""\berror\s*[:=]\s*['"]([a-z_]+)['"]""",
+            r"""failure\(\s*['"]([a-z_]+)['"]""",
+        )
+        found = set()
+        for path in sources:
+            text = path.read_text(encoding="utf-8")
+            for pattern in patterns:
+                found.update(re.findall(pattern, text))
+        self.assertGreater(len(found), 20)
+        self.assertEqual(found - event_log.ERRORS, set())
+
     def test_concurrent_writers_produce_whole_json_records(self) -> None:
         tmp_path = self.tmp_path
         base = tmp_path / "private-log"
