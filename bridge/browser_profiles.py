@@ -1,6 +1,7 @@
 """Verified account changes across connected Chrome profiles."""
 
 from concurrent.futures import ThreadPoolExecutor
+import math
 from pathlib import Path
 
 try:
@@ -63,6 +64,24 @@ def _connections(base, deadline, exclude=None, sender=None):
     return rows
 
 
+def _expiries(rows):
+    """Saved-login expiry per email across profiles, in Unix seconds.
+
+    Every profile reads the same shared vault metadata; a differing value is an
+    older read, and a renewal only moves the expiry later, so the latest wins.
+    """
+    merged = {}
+    for _, state in rows:
+        reported = state.get('expiries')
+        if not isinstance(reported, dict):
+            continue
+        for email, seconds in reported.items():
+            if (isinstance(email, str) and isinstance(seconds, (int, float))
+                    and not isinstance(seconds, bool) and math.isfinite(seconds)):
+                merged[email] = max(merged.get(email, seconds), seconds)
+    return merged
+
+
 def _summary(rows):
     profiles = [dict(connection=path.name, **{key: state[key] for key in
                 ('ok', 'email', 'error', 'busy', 'version', 'lastHealthCheckAt', 'lastSessionSavedAt',
@@ -71,6 +90,7 @@ def _summary(rows):
     ok = bool(rows) and all(state.get('ok') for _, state in rows)
     result = {'ok': ok, 'email': next(iter(emails)) if ok and len(emails) == 1 else None,
               'accounts': sorted({email for _, state in rows for email in state.get('accounts', [])}),
+              'expiries': _expiries(rows),
               'profileCount': len(rows), 'profiles': profiles}
     if not rows:
         result['error'] = 'browser_missing'

@@ -317,8 +317,42 @@ def same_saved_login(raw, entry):
     return canonical(stored['cookies']) == canonical(entry['cookies']) and stored.get('url') == entry.get('url')
 
 
-def remember_web_account(email):
-    """List the email among saved web logins; rewrite the file only if it is new."""
+def session_expiry(cookies):
+    """Earliest expiry (Unix seconds) of the persistent sessionKey* cookies, or None.
+
+    The saved login stops working when the first of them lapses, so the app can
+    warn before a switch to that account would fail.
+    """
+    expiries = []
+    for cookie in cookies:
+        expiration = cookie.get('expirationDate')
+        if (str(cookie.get('name', '')).startswith('sessionKey') and not cookie.get('session')
+                and isinstance(expiration, (int, float)) and not isinstance(expiration, bool)
+                and math.isfinite(expiration)):
+            expiries.append(expiration)
+    return min(expiries) if expiries else None
+
+
+def read_expiries():
+    """Saved web login expiries by email. A separate file keeps web-accounts.json,
+    which older companions read, a plain list."""
+    try:
+        data = json.loads((BASE / 'web-accounts-meta.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    expiries = data.get('expiries') if isinstance(data, dict) else None
+    if not isinstance(expiries, dict):
+        return {}
+    return {email: seconds for email, seconds in expiries.items()
+            if isinstance(email, str) and isinstance(seconds, (int, float))
+            and not isinstance(seconds, bool) and math.isfinite(seconds)}
+
+
+def remember_web_account(email, expiry):
+    """List the email among saved web logins and record when its login expires.
+
+    Each file is rewritten only when its content changes.
+    """
     path = BASE / 'web-accounts.json'
     with open(BASE / 'web-accounts.lock', 'a') as lock:
         os.chmod(lock.name, 0o600)
@@ -326,6 +360,13 @@ def remember_web_account(email):
         emails = json.loads(path.read_text()) if path.exists() else []
         if email not in emails:
             atomic_json(path, sorted(set(emails + [email])))
+        expiries = read_expiries()
+        if expiries.get(email) != expiry:
+            if expiry is None:
+                expiries.pop(email, None)
+            else:
+                expiries[email] = expiry
+            atomic_json(BASE / 'web-accounts-meta.json', {'expiries': expiries})
 
 
 # Failed replies always carry a snake_case code in `error`, which the app, the
@@ -386,11 +427,14 @@ def handle_native(message):
             if not unchanged:
                 macos_keychain.set_password(service, email, encoded)
                 if macos_keychain.get_password(service, email) != encoded: raise RuntimeError()
-            remember_web_account(email)
+            remember_web_account(email, session_expiry(cookies))
             return {'ok': True, 'saved': not unchanged}
         if action == 'vault_list':
             emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
-            return {'ok': True, 'accounts': [e for e in emails if e in configured_emails()]}
+            configured = configured_emails()
+            accounts = [e for e in emails if e in configured]
+            expiries = {e: seconds for e, seconds in read_expiries().items() if e in accounts}
+            return {'ok': True, 'accounts': accounts, 'expiries': expiries}
         if action == 'pending_selection':
             if message.get('perProfile') is not True:
                 # Companions before 0.8.0 apply any email returned here on every connect.
