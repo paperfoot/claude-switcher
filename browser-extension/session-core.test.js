@@ -27,6 +27,16 @@ function memoryRig(initial, now = 1000, delays = {}) {
   return {memory: new SelectionMemory(storage, digest, () => clock.now), stored, clock};
 }
 
+test('status reports saved login expiries when the vault knows them', async () => {
+  const rig = makeRig();
+  rig.vault.list = async () => ({accounts: [EMAIL.A, EMAIL.B], expiries: {[EMAIL.A]: 1_900_000_000}});
+  assert.deepEqual(await rig.switcher.status(), {
+    ok: true, email: EMAIL.A, accounts: [EMAIL.A, EMAIL.B], expiries: {[EMAIL.A]: 1_900_000_000},
+  });
+  rig.vault.list = async () => [EMAIL.A];
+  assert.deepEqual(await rig.switcher.status(), {ok: true, email: EMAIL.A, accounts: [EMAIL.A]});
+});
+
 test('a first run adopts no earlier selection and persists its starting point', async () => {
   const {memory, stored} = memoryRig(undefined, 1000);
   assert.deepEqual(await memory.current(), {appliedAt: 1000, identity: null});

@@ -452,6 +452,27 @@ test('a selection deferred by a running switch is retried on the next alarm', as
   assert.equal(harness.currentEmail(), EMAIL.B);
 });
 
+test('status reports saved login expiries, also while a switch is running', async () => {
+  const expiries = {[EMAIL.A]: 1_900_000_000, [EMAIL.B]: 1_900_000_500};
+  const harness = await makeHarness({
+    deferSelect: true,
+    nativeOverrides: {vault_list: {ok: true, accounts: [EMAIL.A, EMAIL.B], expiries}},
+  });
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  const status = await harness.sendMenu({id: 'status-expiries', command: 'status'});
+  assert.deepEqual(clone(status.result.expiries), expiries);
+  assert.deepEqual(clone(status.result.accounts), [EMAIL.A, EMAIL.B]);
+
+  const popup = harness.sendPopup({action: 'switch', email: EMAIL.B});
+  await harness.waitForNative('select');
+  const busy = await harness.sendMenu({id: 'status-busy', command: 'status'});
+  assert.equal(busy.result.busy, true);
+  assert.deepEqual(clone(busy.result.expiries), expiries);
+  harness.resolveDeferred('select');
+  await popup;
+});
+
 test('popup failures carry a code in error and readable text only in message', async () => {
   const signedOut = await makeHarness({initialCookies: []});
   await signedOut.waitForNative('pending_selection');
