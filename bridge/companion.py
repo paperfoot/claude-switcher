@@ -151,7 +151,7 @@ def refresh_code_cache(email):
         return {'ok': False, 'error': 'code_cache_sync_failed'}
 
 
-def browser_request(command, email=None, expected_profiles=1, exclude=None, deadline=None):
+def browser_request(command, email=None, expected_profiles=1, exclude=None, deadline=None, selected_at=None):
     try:
         from . import browser_profiles
     except ImportError:
@@ -164,7 +164,8 @@ def browser_request(command, email=None, expected_profiles=1, exclude=None, dead
         os.chmod(lock.name, 0o600)
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
-        result = browser_profiles.switch(BASE, email, expected_profiles, exclude, deadline=deadline)
+        result = browser_profiles.switch(BASE, email, expected_profiles, exclude,
+                                         deadline=deadline, selected_at=selected_at)
         if result.get('error') == 'browser_profiles_missing' and result.get('profileCount') == 0 and expected_profiles == 1:
             result['error'] = 'browser_missing'
         return result
@@ -186,7 +187,10 @@ def select_browser(email, expected_profiles=1, deadline=None):
         os.chmod(lock.name, 0o600)
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
-        return browser_request('switch', email, expected_profiles=expected_profiles, deadline=deadline)
+        # A deliberate Chrome-only choice also supersedes older Code selections, so
+        # a profile that reconnects later does not switch back to the Code account.
+        return browser_request('switch', email, expected_profiles=expected_profiles,
+                               deadline=deadline, selected_at=time.time())
 
 
 @logged_switch('claude')
@@ -200,6 +204,9 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
         # Serialise selections across the menu and the extension; fail promptly on contention.
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
+        # Profiles record this stamp when they switch, so a reconnect never re-applies
+        # it and a profile that missed it can catch up later.
+        selected_at = time.time()
         try:
             identity_timeout = deadline.timeout(deadlines.IDENTITY_TIMEOUT, deadlines.CODE_RESTORE_RESERVE)
         except deadlines.DeadlineExceeded:
@@ -221,24 +228,27 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
         if include_browser:
             try:
                 if verified_browser:
-                    web = browser_request('switch', email, expected_profiles=0, exclude=SOCKET, deadline=deadline)
+                    web = browser_request('switch', email, expected_profiles=0, exclude=SOCKET,
+                                          deadline=deadline, selected_at=selected_at)
                 else:
-                    web = browser_request('switch', email, deadline=deadline)
+                    web = browser_request('switch', email, deadline=deadline, selected_at=selected_at)
             except FileNotFoundError: pass
             except (OSError, TimeoutError, ValueError):
                 web = {'ok': False, 'error': 'web_unavailable'}
             if web.get('ok') and web.get('email') != email:
                 web = {'ok': False, 'error': 'web_identity_mismatch'}
             # A browser failure must not undo a verified Code login used by new processes.
+            # Profiles that did not switch catch up from this state when they reconnect.
             if not web.get('ok') and web.get('error') != 'browser_missing':
                 result = {'ok': False, 'partial': True, 'error': 'code_only_after_web_failure',
                           'browserError': web.get('error', 'web_unavailable'),
-                          'codeEmail': email, 'webEmail': web.get('email'), 'browserReady': False}
+                          'codeEmail': email, 'webEmail': web.get('email'), 'browserReady': False,
+                          'selectedAt': selected_at}
                 result.update({key: web[key] for key in ('failureStep', 'cookieName', 'failedConnection', 'rolledBack', 'probeStatus', 'httpStatus') if key in web})
                 atomic_json(STATE, result)
                 return result
         result = {'ok': True, 'codeEmail': email, 'webEmail': web.get('email') if web.get('ok') else None,
-                  'browserReady': bool(web.get('ok')), 'selectedAt': time.time(),
+                  'browserReady': bool(web.get('ok')), 'selectedAt': selected_at,
                   'message': 'Chrome and Code switched' if web.get('ok') else 'Code switched · connect Chrome'}
         atomic_json(STATE, result)
         return result
@@ -253,6 +263,36 @@ def snapshot(deadline=None):
     data['browser'] = browser_state(deadline)
     data['lastSwitch'] = state
     return data
+
+
+def switch_running():
+    """True while a switch holds the lock. The probe never holds it long enough to
+    make a new menu switch fail."""
+    try:
+        with open(BASE / 'switch.lock', 'r') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return False
+    except FileNotFoundError:
+        return False
+
+
+def current_selection():
+    """The last Code selection, while it is still the active Code login."""
+    state = read_state()
+    email = state.get('codeEmail')
+    selected_at = state.get('selectedAt')
+    # Code switched in both cases; a partial result only lacks some Chrome profiles.
+    code_switched = state.get('ok') is True or state.get('partial') is True
+    stamped = (isinstance(selected_at, (int, float)) and not isinstance(selected_at, bool)
+               and math.isfinite(selected_at))
+    if (code_switched and stamped and isinstance(email, str)
+            and email in configured_emails() and code_identity() == email):
+        return {'email': email, 'selectedAt': selected_at}
+    return {'email': None, 'selectedAt': None}
 
 
 def handle_native(message):
@@ -293,17 +333,34 @@ def handle_native(message):
             emails = json.loads((BASE / 'web-accounts.json').read_text()) if (BASE / 'web-accounts.json').exists() else []
             return {'ok': True, 'accounts': [e for e in emails if e in configured_emails()]}
         if action == 'pending_selection':
-            state = read_state()
-            email = state.get('codeEmail')
-            pending = state.get('ok') and state.get('browserReady') is False
-            return {'ok': True, 'email': email if pending and email in configured_emails() and code_identity() == email else None}
+            if message.get('perProfile') is not True:
+                # Companions before 0.8.0 apply any email returned here on every connect.
+                state = read_state()
+                email = state.get('codeEmail')
+                pending = state.get('ok') and state.get('browserReady') is False
+                return {'ok': True, 'email': email if pending and email in configured_emails() and code_identity() == email else None}
+            # Every profile compares selectedAt with the last selection it applied itself,
+            # so one profile catching up never hides the selection from another.
+            if switch_running():
+                # A profile that connected mid-switch may have been missed; it retries.
+                return {'ok': False, 'error': 'switch_in_progress'}
+            return {'ok': True, **current_selection()}
         if action == 'browser_ready':
             email = validate_email(message.get('email'))
+            if switch_running():
+                return {'ok': False, 'error': 'switch_in_progress'}
+            state = read_state()
+            selected_at = message.get('selectedAt', state.get('selectedAt'))
+            # Read the Code identity without the lock so a menu switch is never refused.
+            if state.get('codeEmail') != email or state.get('selectedAt') != selected_at or code_identity() != email:
+                return {'ok': False, 'error': 'selection_changed'}
+            if state.get('ok') is not True:
+                # A partial result keeps its Chrome failure details for diagnostics.
+                return {'ok': True}
             with open(BASE / 'switch.lock', 'a') as lock:
                 try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
-                state = read_state()
-                if state.get('codeEmail') != email or code_identity() != email:
+                if read_state() != state:
                     return {'ok': False, 'error': 'selection_changed'}
                 state.update(browserReady=True, webEmail=email, message='Chrome and Code switched')
                 atomic_json(STATE, state)

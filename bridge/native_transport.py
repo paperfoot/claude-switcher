@@ -180,6 +180,8 @@ class _ClientRequest:
     email: str | None = None
     # Unix milliseconds by which the client needs the reply.
     deadline: float | None = None
+    # Unix seconds of the selection a switch implements; the profile records it.
+    selected_at: float | None = None
 
 
 def _validate_client_request(message: object) -> _ClientRequest | None:
@@ -195,12 +197,16 @@ def _validate_client_request(message: object) -> _ClientRequest | None:
         email = message.get("email")
         if not _bounded_string(email, MAX_EMAIL_LENGTH):
             return None
-        if not {"id", "command", "email"} <= set(message) <= {"id", "command", "email", "deadline"}:
+        allowed = {"id", "command", "email", "deadline", "selectedAt"}
+        if not {"id", "command", "email"} <= set(message) <= allowed:
             return None
         deadline = message.get("deadline")
+        selected_at = message.get("selectedAt")
         if deadline is not None and not _timestamp(deadline):
             return None
-        return _ClientRequest(request_id, command, email, deadline)
+        if selected_at is not None and not _timestamp(selected_at):
+            return None
+        return _ClientRequest(request_id, command, email, deadline, selected_at)
     if set(message) != {"id", "command"}:
         return None
     return _ClientRequest(request_id, command)
@@ -445,6 +451,8 @@ def run_host(
                                             )
                                             continue
                                         forwarded["email"] = request.email
+                                        if request.selected_at is not None:
+                                            forwarded["selectedAt"] = request.selected_at
                                         # Leave time for browser rollback before the reply is due.
                                         forwarded["expiresAt"] = (
                                             time.time() + reply_within - BROWSER_ROLLBACK_GRACE
@@ -503,17 +511,21 @@ def send_request(
     email: str | None = None,
     timeout: float = 50,
     deadline: float | None = None,
+    selected_at: float | None = None,
 ) -> dict:
     """Send one switch/status request to a running host and return its result.
 
     `timeout` bounds the whole exchange. A switch may instead carry `deadline`
     (Unix milliseconds): the host replies by then, and this waits a little longer.
+    `selected_at` (Unix seconds) stamps the selection the switch implements.
     """
 
     request_id = os.urandom(16).hex()
     message: dict[str, object] = {"id": request_id, "command": command}
     if email is not None:
         message["email"] = email
+    if selected_at is not None:
+        message["selectedAt"] = selected_at
     if deadline is not None:
         message["deadline"] = deadline
         timeout = deadline / 1000 - time.time() + CLIENT_DEADLINE_MARGIN
