@@ -2,6 +2,10 @@
 
 User-visible changes, newest first. From 0.6.1 on, version numbers belong to this fork. Upstream releases with the same numbers are different software.
 
+## 1.0.1 — No more Keychain prompts after updates
+
+- Codex logins and the Jev key are stored through Apple's `security` tool, like claude-swap's own items. A locally built app no longer asks for the login password after every rebuild. Logins saved by 1.0.0 move over the first time each is read, which can ask one last time.
+
 ## 1.0.0 — Command palette
 
 - Press ⌥Space anywhere, or choose **Command…** in the menu bar, to open a command palette. Type a few letters of an account and press ↩ to switch, or type a command such as `diagnostics` or `quit`.
