@@ -1,12 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import vm from 'node:vm';
+
+import {SelectionMemory} from './session-core.js';
+
+// Real SHA-256 that settles as a microtask, so flush() covers it.
+const sha256=async(_algorithm,data)=>new Uint8Array(createHash('sha256').update(data).digest()).buffer;
 
 async function harness({renewDuringSave=false}={}) {
   let now=1_000_000, nextTimer=0, nextRequest=0;
   let blockPing=false, blockSwitch=false, releaseSwitch;
   const timers=new Map(), ports=[], requests=[], alarms=[], cookieListeners=[];
+  const storage={selection:{appliedAt:0,identity:null}};
   const actions=[];
   class Switcher {
     async save(){
@@ -42,16 +49,19 @@ async function harness({renewDuringSave=false}={}) {
       }
     },
     cookies:{onChanged:{addListener:f=>cookieListeners.push(f)}},
-    alarms:{create(){},onAlarm:{addListener:f=>alarms.push(f)}}
+    alarms:{create(){},onAlarm:{addListener:f=>alarms.push(f)}},
+    storage:{local:{async get(key){return key in storage?{[key]:storage[key]}:{};},async set(values){Object.assign(storage,values);}}}
   };
   const code=(await readFile(new URL('./background.js',import.meta.url),'utf8')).replace(/^import[^\n]+\n/,'');
   vm.runInNewContext(code,{
     chrome,SessionSwitcher:Switcher,identityFrom:()=>null,claudeCookie:()=>true,browserScopedCookie:()=>false,
-    URL,AbortSignal,Date:{now:()=>now},crypto:{randomUUID:()=>String(++nextRequest)},
+    SelectionMemory,TextEncoder,
+    URL,AbortSignal,Date:{now:()=>now},crypto:{randomUUID:()=>String(++nextRequest),subtle:{digest:sha256}},
     setTimeout:(f,ms)=>{const id=++nextTimer;timers.set(id,{f,ms});return id;},
     clearTimeout:id=>timers.delete(id),queueMicrotask,
   });
-  const flush=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
+  // Enough turns for connect: save, selection record update, then pending_selection.
+  const flush=async()=>{for(let i=0;i<200;i++)await Promise.resolve();};
   await flush();
   return {ports,requests,actions,flush,
     advance(ms){now+=ms;},blockPing(value){blockPing=value;},blockSwitch(){blockSwitch=true;},

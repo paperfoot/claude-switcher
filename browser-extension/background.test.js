@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
-import {SessionSwitcher, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
+import {SessionSwitcher, SelectionMemory, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
 
 const EMAIL = {
   A: 'a@example.com',
@@ -18,6 +18,11 @@ const BROWSER_COOKIE_NAMES = [
   'ion-vk',
   'anthropic-device-id',
 ];
+
+// Real SHA-256 that settles as a microtask, so the harness flushes stay deterministic.
+async function sha256(_algorithm, data) {
+  return new Uint8Array(createHash('sha256').update(data).digest()).buffer;
+}
 
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value);
@@ -77,13 +82,23 @@ function cookieFromSetDetails(details) {
   };
 }
 
+// Unix seconds, like the companion's selectedAt stamps.
+const nowSeconds = () => Date.now() / 1000;
+
+// `storage` is shared between harnesses to model the service worker restarting.
+// The default is an installed profile that has never applied a selection.
 async function makeHarness({
   initialCookies = [sessionCookie('A')],
   entries = [savedSession('A'), savedSession('B'), savedSession('C')],
   pendingEmail = null,
+  pendingSelectedAt = nowSeconds() - 60,
+  pendingResults = null,
+  selectResult = null,
+  storage = {selection: {appliedAt: 0, identity: null}},
   deferSelect = false,
 } = {}) {
   let jar = clone(initialCookies);
+  const alarmListeners = [];
   const vault = new Map(entries.map(entry => [entry.email, clone(entry)]));
   const tabs = [{id: 1, url: 'https://claude.ai/chat', lastAccessed: 1}];
   const nativeRequests = [];
@@ -126,10 +141,12 @@ async function makeHarness({
       case 'vault_list':
         return {ok: true, accounts: [...vault.values()].map(clone)};
       case 'pending_selection':
-        return {ok: true, email: pendingEmail};
+        if (pendingResults?.length) return pendingResults.shift();
+        return {ok: true, email: pendingEmail, selectedAt: pendingEmail ? pendingSelectedAt : null};
       case 'select':
-        return {ok: true, email: message.email};
+        return selectResult ?? {ok: true, email: message.email};
       case 'browser_ready':
+      case 'ping':
         return {ok: true};
       default:
         throw new Error(`Unexpected native action: ${message.action}`);
@@ -161,7 +178,13 @@ async function makeHarness({
   const chrome = {
     alarms: {
       create() {},
-      onAlarm: {addListener() {}},
+      onAlarm: {addListener(listener) { alarmListeners.push(listener); }},
+    },
+    storage: {
+      local: {
+        async get(key) { return key in storage ? {[key]: clone(storage[key])} : {}; },
+        async set(values) { Object.assign(storage, clone(values)); },
+      },
     },
     cookies: {
       async getAll() { return clone(jar); },
@@ -216,18 +239,20 @@ async function makeHarness({
   };
 
   const source = await readFile(new URL('./background.js', import.meta.url), 'utf8');
-  const executable = source.replace(/^import \{SessionSwitcher, identityFrom, claudeCookie, browserScopedCookie\} from '\.\/session-core\.js';\n/, '');
+  const executable = source.replace(/^import \{[^}]+\} from '\.\/session-core\.js';\n/, '');
   assert.notEqual(executable, source, 'background module import was removed for dependency injection');
   vm.runInNewContext(executable, {
     AbortSignal,
     SessionSwitcher,
+    SelectionMemory,
+    TextEncoder,
     URL,
     chrome,
     claudeCookie,
     browserScopedCookie,
     clearTimeout,
     console,
-    crypto: {randomUUID},
+    crypto: {randomUUID, subtle: {digest: sha256}},
     fetch,
     identityFrom,
     queueMicrotask,
@@ -240,7 +265,18 @@ async function makeHarness({
       return EMAIL[key] ?? null;
     },
     jar: () => clone(jar),
+    storage,
     nativeRequests,
+    requested(action) {
+      return nativeRequests.filter(message => message.action === action);
+    },
+    async alarm() {
+      for (const listener of alarmListeners) listener();
+      for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+    },
+    async settle() {
+      for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+    },
     tabs,
     async flush() {
       await new Promise(resolve => setImmediate(resolve));
@@ -286,6 +322,130 @@ test('a deferred popup Code selection keeps an incoming menu switch busy', async
 
   harness.resolveDeferred('select');
   assert.deepEqual(clone(await popup), {ok: true, email: EMAIL.B});
+  assert.equal(harness.currentEmail(), EMAIL.B);
+});
+
+const sha256Hex = text => createHash('sha256').update(text).digest('hex');
+
+test('a profile closed during a switch catches up once when it opens', async () => {
+  const storage = {selection: {appliedAt: nowSeconds() - 600, identity: sha256Hex(EMAIL.A)}};
+  const selectedAt = nowSeconds() - 60;
+  const opened = await makeHarness({pendingEmail: EMAIL.B, pendingSelectedAt: selectedAt, storage});
+  const ready = await opened.waitForNative('browser_ready');
+  assert.equal(opened.requested('pending_selection')[0].perProfile, true);
+  assert.equal(ready.selectedAt, selectedAt);
+  assert.equal(opened.currentEmail(), EMAIL.B);
+  await opened.settle();
+  assert.deepEqual(storage.selection, {appliedAt: selectedAt, identity: sha256Hex(EMAIL.B)});
+
+  const restarted = await makeHarness({initialCookies: opened.jar(), pendingEmail: EMAIL.B, pendingSelectedAt: selectedAt, storage});
+  await restarted.waitForNative('pending_selection');
+  await restarted.settle();
+  assert.equal(restarted.requested('vault_get').length, 0);
+  assert.equal(restarted.requested('browser_ready').length, 0);
+});
+
+test('every profile catches up on its own; one catching up does not hide it from another', async () => {
+  const selectedAt = nowSeconds() - 60;
+  for (const profile of ['first', 'second']) {
+    const storage = {selection: {appliedAt: nowSeconds() - 600, identity: sha256Hex(EMAIL.A)}};
+    const harness = await makeHarness({pendingEmail: EMAIL.B, pendingSelectedAt: selectedAt, storage});
+    await harness.waitForNative('browser_ready');
+    assert.equal(harness.currentEmail(), EMAIL.B, `${profile} profile switched`);
+  }
+});
+
+test('a first run adopts no earlier selection', async () => {
+  const storage = {};
+  const harness = await makeHarness({pendingEmail: EMAIL.B, pendingSelectedAt: nowSeconds() - 60, storage});
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  assert.equal(harness.currentEmail(), EMAIL.A);
+  assert.equal(harness.requested('vault_get').length, 0);
+  assert.ok(storage.selection.appliedAt > nowSeconds() - 60);
+});
+
+test('a manual sign-in in this profile is not undone by an older selection', async () => {
+  const storage = {selection: {appliedAt: nowSeconds() - 600, identity: sha256Hex(EMAIL.A)}};
+  // The user signed in to C here after the last selection.
+  const harness = await makeHarness({
+    initialCookies: [sessionCookie('C')], pendingEmail: EMAIL.B, pendingSelectedAt: nowSeconds() - 60, storage,
+  });
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  assert.equal(harness.currentEmail(), EMAIL.C);
+  assert.equal(harness.requested('vault_get').length, 0);
+  assert.equal(storage.selection.identity, sha256Hex(EMAIL.C));
+});
+
+test('"Add another account" keeps the next sign-in; a newer selection still applies', async () => {
+  const storage = {selection: {appliedAt: nowSeconds() - 600, identity: sha256Hex(EMAIL.A)}};
+  const before = await makeHarness({storage});
+  await before.waitForNative('pending_selection');
+  await before.settle();
+  assert.deepEqual(clone(await before.sendPopup({action: 'newLogin'})), {ok: true});
+  const signedInAt = storage.selection.appliedAt;
+  assert.equal(storage.selection.identity, null);
+
+  // The user signs in to C, then Chrome restarts.
+  const older = await makeHarness({
+    initialCookies: [sessionCookie('C')], pendingEmail: EMAIL.B, pendingSelectedAt: signedInAt - 1, storage,
+  });
+  await older.waitForNative('pending_selection');
+  await older.settle();
+  assert.equal(older.currentEmail(), EMAIL.C);
+  assert.equal(older.requested('vault_get').length, 0);
+
+  const newer = await makeHarness({
+    initialCookies: [sessionCookie('C')], pendingEmail: EMAIL.B, pendingSelectedAt: signedInAt + 1, storage,
+  });
+  await newer.waitForNative('browser_ready');
+  assert.equal(newer.currentEmail(), EMAIL.B);
+});
+
+test('a menu switch records its selection; a rollback leaves it to catch up later', async () => {
+  const storage = {selection: {appliedAt: 5, identity: null}};
+  const harness = await makeHarness({storage});
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  const selectedAt = nowSeconds() - 30;
+
+  await harness.sendMenu({id: 'forward', command: 'switch', email: EMAIL.B, selectedAt});
+  assert.deepEqual(storage.selection, {appliedAt: selectedAt, identity: sha256Hex(EMAIL.B)});
+  // Another profile failed, so the coordinator restored this one without a stamp.
+  await harness.sendMenu({id: 'rollback', command: 'switch', email: EMAIL.A});
+  assert.deepEqual(storage.selection, {appliedAt: selectedAt, identity: sha256Hex(EMAIL.A)});
+
+  const reconnected = await makeHarness({
+    initialCookies: harness.jar(), pendingEmail: EMAIL.B, pendingSelectedAt: selectedAt, storage,
+  });
+  await reconnected.waitForNative('browser_ready');
+  assert.equal(reconnected.currentEmail(), EMAIL.B);
+});
+
+test('a popup selection records the stamp the companion returns', async () => {
+  const storage = {selection: {appliedAt: 5, identity: null}};
+  const harness = await makeHarness({storage, selectResult: {ok: true, email: EMAIL.B, codeEmail: EMAIL.B, selectedAt: 42.5}});
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  await harness.sendPopup({action: 'switch', email: EMAIL.B});
+  await harness.settle();
+  assert.deepEqual(storage.selection, {appliedAt: 42.5, identity: sha256Hex(EMAIL.B)});
+});
+
+test('a selection deferred by a running switch is retried on the next alarm', async () => {
+  const selectedAt = nowSeconds() - 60;
+  const harness = await makeHarness({
+    pendingEmail: EMAIL.B, pendingSelectedAt: selectedAt,
+    pendingResults: [{ok: false, error: 'switch_in_progress'}],
+  });
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  assert.equal(harness.currentEmail(), EMAIL.A);
+
+  await harness.alarm();
+  await harness.waitForNative('browser_ready');
+  assert.equal(harness.requested('pending_selection').length, 2);
   assert.equal(harness.currentEmail(), EMAIL.B);
 });
 

@@ -1,13 +1,83 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 
 import {
   SessionSwitcher,
+  SelectionMemory,
   emailKey,
   cookieDetails,
   identityFrom,
   validSession,
 } from './session-core.js';
+
+const sha256 = text => createHash('sha256').update(text).digest('hex');
+
+function memoryRig(initial, now = 1000, delays = {}) {
+  const stored = {value: initial};
+  const clock = {now};
+  const storage = {
+    async get() { return stored.value === undefined ? undefined : structuredClone(stored.value); },
+    async set(value) { stored.value = structuredClone(value); },
+  };
+  const digest = async text => {
+    await new Promise(resolve => setTimeout(resolve, delays[text] ?? 0));
+    return sha256(text);
+  };
+  return {memory: new SelectionMemory(storage, digest, () => clock.now), stored, clock};
+}
+
+test('a first run adopts no earlier selection and persists its starting point', async () => {
+  const {memory, stored} = memoryRig(undefined, 1000);
+  assert.deepEqual(await memory.current(), {appliedAt: 1000, identity: null});
+  assert.deepEqual(stored.value, {appliedAt: 1000, identity: null});
+});
+
+test('an unreadable record is replaced like a first run', async () => {
+  for (const corrupt of [{appliedAt: 'soon', identity: null}, {appliedAt: 5, identity: 7}, 'x']) {
+    const {memory} = memoryRig(corrupt, 1000);
+    assert.deepEqual(await memory.current(), {appliedAt: 1000, identity: null});
+  }
+});
+
+test('switching records the newest selection and a rollback keeps it', async () => {
+  const {memory} = memoryRig({appliedAt: 50, identity: null});
+  assert.deepEqual(await memory.switched('B@example.com', 60), {appliedAt: 60, identity: sha256(EMAIL.B)});
+  assert.equal((await memory.switched(EMAIL.C, 55)).appliedAt, 60, 'never moves backwards');
+  assert.deepEqual(await memory.switched(EMAIL.A), {appliedAt: 60, identity: sha256(EMAIL.A)});
+});
+
+test('a login this companion did not switch to overrides older selections', async () => {
+  const {memory, clock} = memoryRig({appliedAt: 50, identity: null}, 100);
+  assert.equal((await memory.observed(EMAIL.A)).appliedAt, 50, 'the first login seen is not a manual change');
+  clock.now = 200;
+  assert.equal((await memory.observed(EMAIL.A)).appliedAt, 50);
+  assert.deepEqual(await memory.observed(EMAIL.C), {appliedAt: 200, identity: sha256(EMAIL.C)});
+});
+
+test('"Add another account" overrides older selections until a newer one arrives', async () => {
+  const {memory, clock} = memoryRig({appliedAt: 50, identity: sha256(EMAIL.A)}, 100);
+  assert.deepEqual(await memory.manualLogin(), {appliedAt: 100, identity: null});
+  clock.now = 150;
+  assert.deepEqual(await memory.observed(EMAIL.C), {appliedAt: 100, identity: sha256(EMAIL.C)});
+  assert.equal((await memory.switched(EMAIL.B, 120)).appliedAt, 120);
+});
+
+test('updates apply in call order, so a recorded switch is never mistaken for a manual login', async () => {
+  // The switch's digest is slower than the following save's.
+  const {memory} = memoryRig({appliedAt: 50, identity: sha256(EMAIL.A)}, 100, {[EMAIL.B]: 20});
+  const switched = memory.switched(EMAIL.B, 60);
+  const saved = memory.observed(EMAIL.B);
+  await Promise.all([switched, saved]);
+  assert.deepEqual(await memory.current(), {appliedAt: 60, identity: sha256(EMAIL.B)});
+});
+
+test('the stored record never contains an email address', async () => {
+  const {memory, stored} = memoryRig({appliedAt: 50, identity: null}, 100);
+  await memory.switched(EMAIL.B, 60);
+  await memory.observed(EMAIL.C);
+  assert.equal(JSON.stringify(stored.value).includes('@'), false);
+});
 
 const EMAIL = {
   A: 'a@example.com',
