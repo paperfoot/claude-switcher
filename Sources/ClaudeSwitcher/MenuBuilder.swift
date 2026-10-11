@@ -241,9 +241,10 @@ enum MenuBuilder {
                 item.isEnabled = input.accountStatuses[profile.id] != nil
                 item.toolTip = AccountPresentation(profile: profile, status: input.accountStatuses[profile.id]).help
             }
+            refreshUsage(in: menu, from: liveUsageItem(profile: profile, status: input.accountStatuses[profile.id],
+                                                       snapshot: input.liveUsage[profile.id],
+                                                       failed: input.usageFailures.contains(profile.id), now: input.now))
         }
-        updateLiveUsage(in: menu, config: input.config, statuses: input.accountStatuses,
-                        snapshots: input.liveUsage, failures: input.usageFailures, now: input.now)
         for account in input.codexAccounts {
             let id = NSUserInterfaceItemIdentifier("codex.account.\(account.email)")
             if let item = menu.items.first(where: { $0.identifier == id }) {
@@ -252,13 +253,7 @@ enum MenuBuilder {
                 let connectionUnchanged = (item.badge == nil) == account.connected
                 item.isEnabled = connectionUnchanged && !input.codexBusy && !input.switching
             }
-            let updated = codexUsageItem(account, now: input.now)
-            if let existing = menu.items.first(where: { $0.identifier == updated.identifier }),
-               let current = existing.view as? UsageBarView, let replacement = updated.view as? UsageBarView {
-                current.update(rows: replacement.rows)
-                current.toolTip = replacement.toolTip
-                current.setAccessibilityLabel(replacement.accessibilityLabel())
-            }
+            refreshUsage(in: menu, from: codexUsageItem(account, now: input.now))
         }
         menu.items.first { $0.identifier?.rawValue == "codex.cancel-login" }?.isEnabled = input.codexConnecting
         for (id, text) in [("claude.status", input.switchMessage), ("codex.status", input.codexMessage)] {
@@ -298,64 +293,75 @@ enum MenuBuilder {
 
     private static func liveUsageItem(profile: Profile, status: AccountStatus?, snapshot: LiveUsageSnapshot?,
                                       failed: Bool, now: Date) -> NSMenuItem {
-        let matches = status?.matches(profile.expectedEmail) == true
         let presentation = LiveUsagePresentation(profile: profile, status: status, snapshot: snapshot, failed: failed, now: now)
-        let valid = presentation.snapshot
-        let rows = [("5h", valid?.fiveHour), ("Week", valid?.sevenDay)].map { label, window in
-            let expired = window?.resetsAt.map { $0 <= now } ?? false
-            // Keep a passed window's last value, explicitly marked as previous usage.
-            let percent = window.flatMap { $0.percent.isFinite ? Int(min(100, max(0, $0.percent)).rounded()) : nil }
-            var trailing: String
-            if expired {
-                trailing = "↻ due"
-            } else if let reset = window?.resetsAt {
-                trailing = "↻ \(compactClock(reset, now: now))"
-            } else if window?.percent == 0 {
-                trailing = "—"
-            } else if window != nil {
-                trailing = "—"
-            } else {
-                trailing = status == .signedOut ? "Sign in" : (failed ? "Retrying" : (matches || status == nil ? "Loading" : "Checking"))
-            }
-            return UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0),
-                                    trailing: trailing, isCached: presentation.isCached || expired)
-        }
-        let view = UsageBarView(rows: rows)
-        let details = rows.map { "\($0.label): \($0.percent.map { "\($0)% used" } ?? "unavailable"), \($0.trailing ?? "sign in first")" }.joined(separator: ". ")
-        let checked = snapshot.map { " Last checked \(clock($0.fetchedAt, now: now))." } ?? ""
-        view.toolTip = details + checked
-        view.setAccessibilityElement(true)
-        view.setAccessibilityRole(.staticText)
-        view.setAccessibilityLabel("\(profile.expectedEmail ?? status?.email ?? profile.label). \(details)\(checked)")
-        let item = informationalItem("Usage")
-        item.view = view
+        let matches = status?.matches(profile.expectedEmail) == true
+        let waiting = status == .signedOut ? "Sign in" : (failed ? "Retrying" : (matches || status == nil ? "Loading" : "Checking"))
+        let item = gaugeItem(presentation.snapshot, stale: presentation.isStale, failed: failed, waiting: waiting,
+                             subject: profile.expectedEmail ?? status?.email ?? profile.label, now: now)
         item.identifier = NSUserInterfaceItemIdentifier("claude-switcher.live-usage.\(profile.id)")
         return item
     }
 
     private static func codexUsageItem(_ account: CodexAccount, now: Date) -> NSMenuItem {
-        let snapshot = account.usage
-        let cached = account.usageFailed || snapshot.map { now.timeIntervalSince($0.fetchedAt) > 300 } ?? true
-        let rows = [("5h", snapshot?.fiveHour), ("Week", snapshot?.sevenDay)].map { label, window in
-            let expired = window?.resetsAt.map { $0 <= now } ?? false
-            let percent = window.map { Int(min(100, max(0, $0.percent)).rounded()) }
-            let reset = expired ? "↻ due" : window?.resetsAt.map { "↻ \(compactClock($0, now: now))" }
-            return UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0),
-                                    trailing: reset, isCached: cached || expired)
-        }
-        let view = UsageBarView(rows: rows)
-        let details = [("5-hour", snapshot?.fiveHour), ("Weekly", snapshot?.sevenDay)].map { label, value in
-            "\(label): \(value.map { "\(Int($0.percent.rounded()))% used" } ?? "unavailable")" +
-            (value?.resetsAt.map { ", resets \(clock($0, now: now))" } ?? "")
-        }.joined(separator: ". ")
-        view.toolTip = details + (snapshot.map { ". Updated \(clock($0.fetchedAt, now: now))" } ?? ". Refreshing…") + (cached ? ". Cached" : "")
-        view.setAccessibilityElement(true)
-        view.setAccessibilityRole(.staticText)
-        view.setAccessibilityLabel("\(account.email). \(view.toolTip ?? "")")
-        let item = informationalItem("Usage")
-        item.view = view
+        let stale = LiveUsagePolicy.isStale(account.usage, failed: account.usageFailed, now: now)
+        let item = gaugeItem(account.usage, stale: stale, failed: account.usageFailed,
+                             waiting: account.usageFailed ? "Retrying" : "Loading", subject: account.email, now: now)
         item.identifier = NSUserInterfaceItemIdentifier("codex.usage.\(account.email)")
         return item
+    }
+
+    /// Claude and Codex rows share one rule: colour follows the level, a stale reading is shown
+    /// as approximate, and a window whose reset has passed is unknown until the next reading.
+    /// `waiting` stands in for both windows while there is no reading at all.
+    private static func gaugeItem(_ snapshot: LiveUsageSnapshot?, stale: Bool, failed: Bool, waiting: String,
+                                  subject: String, now: Date) -> NSMenuItem {
+        var rows: [UsageBarView.Row] = []
+        var lines: [String] = []
+        for (label, name, window) in [("5h", "5-hour", snapshot?.fiveHour), ("Week", "Weekly", snapshot?.sevenDay)] {
+            let reset = window?.resetsAt
+            let expired = reset.map { $0 <= now } ?? false
+            let percent = window.flatMap { $0.percent.isFinite ? $0.displayedPercent(at: now) : nil }
+            let trailing: String?
+            if snapshot == nil {
+                trailing = waiting
+            } else if expired {
+                trailing = "↻ due"
+            } else {
+                trailing = reset.map { "↻ \(compactClock($0, now: now))" }
+            }
+            rows.append(UsageBarView.Row(label: label, percent: percent, level: UsageLevel.of(percent ?? 0),
+                                         trailing: trailing, isStale: stale && percent != nil))
+            if expired {
+                lines.append("\(name): reset due, waiting for a new reading")
+            } else if let percent {
+                lines.append("\(name): \(stale ? "about " : "")\(percent)% used" + (reset.map { ", resets \(clock($0, now: now))" } ?? ""))
+            } else if snapshot != nil {
+                lines.append("\(name): unavailable")
+            }
+        }
+        if let snapshot {
+            lines.append("Last updated \(clock(snapshot.fetchedAt, now: now))" + (failed ? ", latest refresh failed" : ""))
+        } else {
+            lines.append("Usage: \(waiting.lowercased())")
+        }
+        let view = UsageBarView(rows: rows)
+        view.toolTip = lines.joined(separator: "\n")
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.staticText)
+        view.setAccessibilityLabel(([subject] + lines).joined(separator: ". ") + ".")
+        let item = informationalItem("Usage")
+        item.view = view
+        return item
+    }
+
+    /// Copies new rows and descriptions into the usage view already on screen, keeping its
+    /// identity and frame.
+    private static func refreshUsage(in menu: NSMenu, from updated: NSMenuItem) {
+        guard let current = menu.items.first(where: { $0.identifier == updated.identifier })?.view as? UsageBarView,
+              let replacement = updated.view as? UsageBarView else { return }
+        current.update(rows: replacement.rows)
+        current.toolTip = replacement.toolTip
+        current.setAccessibilityLabel(replacement.accessibilityLabel())
     }
 
     private static func compactClock(_ date: Date, now: Date) -> String {
@@ -363,20 +369,6 @@ enum MenuBuilder {
         formatter.locale = Locale(identifier: "en_GB")
         formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "EEE HH:mm"
         return formatter.string(from: date)
-    }
-
-    static func updateLiveUsage(in menu: NSMenu, config: Config, statuses: [String: AccountStatus],
-                                snapshots: [String: LiveUsageSnapshot], failures: Set<String>, now: Date = Date()) {
-        for profile in config.profiles {
-            let updated = liveUsageItem(profile: profile, status: statuses[profile.id], snapshot: snapshots[profile.id],
-                                        failed: failures.contains(profile.id), now: now)
-            guard let existing = menu.items.first(where: { $0.identifier == updated.identifier }) else { continue }
-            if let current = existing.view as? UsageBarView, let replacement = updated.view as? UsageBarView {
-                current.update(rows: replacement.rows)
-                current.toolTip = replacement.toolTip
-                current.setAccessibilityLabel(replacement.accessibilityLabel())
-            }
-        }
     }
 
     private static let timeFormatter: DateFormatter = {

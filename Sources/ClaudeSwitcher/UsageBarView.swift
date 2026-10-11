@@ -10,11 +10,12 @@ final class UsageBarView: NSView {
 
     struct Row: Sendable {
         let label: String
-        /// `nil` renders as an em dash when the provider has no reading for this window.
+        /// `nil` renders as an em dash: no reading for this window, or it has reset since.
         let percent: Int?
         let level: UsageLevel
         let trailing: String?
-        var isCached: Bool = false
+        /// The value may have moved since it was read: shown as "~84%", in the same colours.
+        var isStale: Bool = false
     }
 
     /// Where item titles start in a menu with a state column, so the rows line up with the
@@ -58,7 +59,8 @@ final class UsageBarView: NSView {
         let availableWidth = bounds.width - Self.titleInset - Self.rightInset
         let columnWidth = (availableWidth - 22) / 2
         for (index, row) in visible.enumerated() {
-            let tint = row.percent == nil || row.isCached ? NSColor.secondaryLabelColor : Self.color(for: row.level)
+            // Colour always follows the level; only an unknown value is neutral.
+            let tint = row.percent == nil ? NSColor.secondaryLabelColor : Self.color(for: row.level)
             let number: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: tint]
             let top: CGFloat = 0
             let baseline = (Self.rowHeight - font.capHeight) / 2 - 1
@@ -86,7 +88,7 @@ final class UsageBarView: NSView {
             }
             x += Self.barWidth + 10
 
-            let text = row.percent.map { "\($0)%" } ?? "\u{2014}"
+            let text = row.percent.map { (row.isStale ? "~" : "") + "\($0)%" } ?? "\u{2014}"
             (text as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: number)
             x += Self.percentWidth
 
