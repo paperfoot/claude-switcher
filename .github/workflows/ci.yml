@@ -21,6 +21,8 @@ jobs:
           node-version: '22'
       - name: Browser switching tests
         run: node --test browser-extension/*.test.js
+      - name: Desktop history tests
+        run: node --test history/*.test.mjs
       - name: Native bridge and coordinator tests
         run: python3 -m unittest discover -s bridge -p 'test_*.py'
       - name: Bundle (ad-hoc signed)
