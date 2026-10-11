@@ -1,11 +1,12 @@
 import fcntl
+import io
 import json
 import os
 import sys
 import tempfile
 import types
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -61,6 +62,16 @@ class CompanionTests(unittest.TestCase):
 
     def assert_saved(self, result):
         self.assertEqual(json.loads(self.state.read_text()), result)
+
+    def code_targets(self):
+        return [call.args[0] for call in self.switch_code.call_args_list]
+
+    def assert_browser_switch(self, email, **expected):
+        self.browser_request.assert_called_once()
+        args, kwargs = self.browser_request.call_args
+        self.assertEqual(args, ("switch", email))
+        self.assertIsInstance(kwargs.pop("deadline"), companion.deadlines.Deadline)
+        self.assertEqual(kwargs, expected)
 
     def handle_native(self, message, keychain=None):
         fake_claude_swap = types.ModuleType("claude_swap")
@@ -244,8 +255,8 @@ class CompanionTests(unittest.TestCase):
         self.assertTrue(result["browserReady"])
         self.assertEqual(result["message"], "Chrome and Code switched")
         self.assertIsInstance(result["selectedAt"], float)
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
-        self.browser_request.assert_called_once_with("switch", TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
+        self.assert_browser_switch(TARGET_EMAIL)
         self.assert_saved(result)
 
     def test_missing_chrome_returns_code_only_success(self):
@@ -258,8 +269,8 @@ class CompanionTests(unittest.TestCase):
         self.assertIsNone(result["webEmail"])
         self.assertFalse(result["browserReady"])
         self.assertEqual(result["message"], "Code switched · connect Chrome")
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
-        self.browser_request.assert_called_once_with("switch", TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
+        self.assert_browser_switch(TARGET_EMAIL)
         self.assert_saved(result)
 
     def test_browser_transport_exceptions_keep_selected_code_account(self):
@@ -287,8 +298,8 @@ class CompanionTests(unittest.TestCase):
                         "browserReady": False,
                     },
                 )
-                self.switch_code.assert_called_once_with(TARGET_EMAIL)
-                self.browser_request.assert_called_once_with("switch", TARGET_EMAIL)
+                self.assertEqual(self.code_targets(), [TARGET_EMAIL])
+                self.assert_browser_switch(TARGET_EMAIL)
                 self.assert_saved(result)
 
     def test_explicit_transport_errors_keep_selected_code_account(self):
@@ -319,8 +330,8 @@ class CompanionTests(unittest.TestCase):
                         "browserReady": False,
                     },
                 )
-                self.switch_code.assert_called_once_with(TARGET_EMAIL)
-                self.browser_request.assert_called_once_with("switch", TARGET_EMAIL)
+                self.assertEqual(self.code_targets(), [TARGET_EMAIL])
+                self.assert_browser_switch(TARGET_EMAIL)
                 self.assert_saved(result)
 
     def test_explicit_code_only_switch_does_not_contact_chrome(self):
@@ -354,7 +365,7 @@ class CompanionTests(unittest.TestCase):
                 "browserReady": False,
             },
         )
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
         self.assert_saved(result)
 
     def test_web_failure_without_previous_code_account_reports_actual_code_state(self):
@@ -378,7 +389,7 @@ class CompanionTests(unittest.TestCase):
                 "browserReady": False,
             },
         )
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
         self.assert_saved(result)
 
     def test_browser_success_with_wrong_identity_keeps_selected_code_account(self):
@@ -401,7 +412,7 @@ class CompanionTests(unittest.TestCase):
                 "browserReady": False,
             },
         )
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
         self.assert_saved(result)
 
     def test_code_failure_never_attempts_chrome(self):
@@ -411,7 +422,7 @@ class CompanionTests(unittest.TestCase):
         result = companion.select_account(TARGET_EMAIL)
 
         self.assertEqual(result, {"ok": False, "error": "code_switch_failed"})
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
         self.browser_request.assert_not_called()
         self.assertFalse(self.state.exists())
 
@@ -421,10 +432,7 @@ class CompanionTests(unittest.TestCase):
         result = companion.select_account(TARGET_EMAIL)
 
         self.assertEqual(result, {"ok": False, "error": "code_switch_failed"})
-        self.assertEqual(
-            self.switch_code.call_args_list,
-            [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
-        )
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL, OLD_EMAIL])
         self.browser_request.assert_not_called()
         self.assertFalse(self.state.exists())
 
@@ -437,10 +445,7 @@ class CompanionTests(unittest.TestCase):
         result = companion.select_account(TARGET_EMAIL)
 
         self.assertEqual(result, {"ok": False, "error": "code_restore_failed"})
-        self.assertEqual(
-            self.switch_code.call_args_list,
-            [mock.call(TARGET_EMAIL), mock.call(OLD_EMAIL)],
-        )
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL, OLD_EMAIL])
         self.browser_request.assert_not_called()
         self.assertFalse(self.state.exists())
 
@@ -464,7 +469,7 @@ class CompanionTests(unittest.TestCase):
                 "browserReady": False,
             },
         )
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
         self.assert_saved(result)
 
     def test_lock_contention_fails_before_switching(self):
@@ -522,9 +527,12 @@ class CompanionTests(unittest.TestCase):
         ):
             result = companion.snapshot()
 
-        self.run_backend.assert_called_once_with("list", "--json")
-        self.code_identity.assert_called_once_with()
-        self.browser_request.assert_called_once_with("status")
+        self.assertEqual(self.run_backend.call_args.args, ("list", "--json"))
+        self.assertLessEqual(self.run_backend.call_args.kwargs["timeout"], companion.deadlines.CSWAP_TIMEOUT)
+        self.code_identity.assert_called_once()
+        self.assertLessEqual(self.code_identity.call_args.kwargs["timeout"], companion.deadlines.IDENTITY_TIMEOUT)
+        self.assertEqual(self.browser_request.call_args.args, ("status",))
+        self.assertIsInstance(self.browser_request.call_args.kwargs["deadline"], companion.deadlines.Deadline)
         self.assertEqual(result["accounts"], backend["accounts"])
         self.assertEqual(result["codeEmail"], TARGET_EMAIL)
         self.assertEqual(
@@ -679,7 +687,7 @@ class CompanionTests(unittest.TestCase):
     def test_browser_only_does_not_read_or_change_code(self):
         result = companion.select_browser(TARGET_EMAIL, expected_profiles=2)
         self.assertTrue(result['ok'])
-        self.browser_request.assert_called_once_with('switch', TARGET_EMAIL, expected_profiles=2)
+        self.assert_browser_switch(TARGET_EMAIL, expected_profiles=2)
         self.code_identity.assert_not_called()
         self.switch_code.assert_not_called()
         self.run_backend.assert_not_called()
@@ -714,7 +722,7 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(result['probeStatus'], 'unauthorized')
         self.assertEqual(result['httpStatus'], 401)
         self.assertNotIn('must-not-appear', json.dumps(result))
-        self.switch_code.assert_called_once_with(TARGET_EMAIL)
+        self.assertEqual(self.code_targets(), [TARGET_EMAIL])
         self.assert_saved(result)
 
     def test_partial_switch_log_has_failure_metadata_without_addresses(self):
@@ -801,8 +809,7 @@ class CompanionTests(unittest.TestCase):
         self.browser_request.return_value = {'ok': True, 'email': TARGET_EMAIL}
         result = self.handle_native({'action': 'select', 'email': TARGET_EMAIL})
         self.assertTrue(result['ok'])
-        self.browser_request.assert_called_once_with('switch', TARGET_EMAIL,
-                                                     expected_profiles=0, exclude=companion.SOCKET)
+        self.assert_browser_switch(TARGET_EMAIL, expected_profiles=0, exclude=companion.SOCKET)
 
     def test_invalid_email_is_rejected_before_any_external_call(self):
         self.validate_email.side_effect = ValueError("unknown_account")
@@ -818,9 +825,6 @@ class CompanionTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class CodeCacheCoordinatorTests(unittest.TestCase):
     def test_already_active_account_still_refreshes_existing_code_cache(self):
         with (
@@ -830,7 +834,8 @@ class CodeCacheCoordinatorTests(unittest.TestCase):
             mock.patch.object(companion, 'refresh_code_cache', return_value={'ok': True, 'cacheUpdated': True}) as refresh,
         ):
             companion.switch_code(TARGET_EMAIL)
-        backend.assert_called_once_with('switch', TARGET_EMAIL, '--json')
+        self.assertEqual(backend.call_args.args, ('switch', TARGET_EMAIL, '--json'))
+        self.assertLessEqual(backend.call_args.kwargs['timeout'], companion.deadlines.CSWAP_TIMEOUT)
         refresh.assert_called_once_with(TARGET_EMAIL)
 
     def test_cache_repair_failure_does_not_undo_verified_code_login(self):
@@ -841,4 +846,161 @@ class CodeCacheCoordinatorTests(unittest.TestCase):
             mock.patch.object(companion, 'refresh_code_cache', return_value={'ok': False, 'error': 'code_cache_sync_failed'}),
         ):
             companion.switch_code(TARGET_EMAIL)
-        backend.assert_called_once_with('switch', TARGET_EMAIL, '--json')
+        self.assertEqual(backend.call_args.args, ('switch', TARGET_EMAIL, '--json'))
+        self.assertLessEqual(backend.call_args.kwargs['timeout'], companion.deadlines.CSWAP_TIMEOUT)
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def wall(self):
+        return 1_000_000.0 + self.now
+
+    def deadline(self, seconds):
+        return companion.deadlines.Deadline(seconds, clock=self.monotonic, wall=self.wall)
+
+
+class DeadlineCoordinatorTests(unittest.TestCase):
+    """The menu and popup budgets flow into every Code and Chrome step."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name) / "claude-switcher"
+        self.clock = FakeClock()
+        self.backend_calls = []
+        self.identity_timeouts = []
+        self.identity = OLD_EMAIL
+        self.stack = ExitStack()
+        self.stack.enter_context(mock.patch.object(companion, "BASE", self.base))
+        self.stack.enter_context(
+            mock.patch.object(companion, "STATE", self.base / "coordinated-state.json"))
+        self.stack.enter_context(
+            mock.patch.object(companion, "validate_email", side_effect=lambda email: email.lower()))
+        self.stack.enter_context(
+            mock.patch.object(companion, "code_identity", side_effect=self.fake_identity))
+        self.stack.enter_context(
+            mock.patch.object(companion, "run_backend", side_effect=self.fake_backend))
+        self.refresh = self.stack.enter_context(
+            mock.patch.object(companion, "refresh_code_cache", return_value={"ok": True}))
+        self.browser_request = self.stack.enter_context(
+            mock.patch.object(companion, "browser_request",
+                              return_value={"ok": True, "email": TARGET_EMAIL}))
+        self.backend_seconds = 1.0
+        self.backend_failures = 0
+
+    def tearDown(self):
+        self.stack.close()
+        self.temporary.cleanup()
+
+    def fake_identity(self, timeout):
+        self.identity_timeouts.append(timeout)
+        self.clock.now += 1
+        return self.identity
+
+    def fake_backend(self, *args, timeout):
+        self.backend_calls.append((args, timeout))
+        if self.backend_failures:
+            self.backend_failures -= 1
+            self.clock.now += timeout
+            raise companion.subprocess.TimeoutExpired("cswap", timeout)
+        self.clock.now += self.backend_seconds
+        if args[0] == "switch":
+            self.identity = args[1]
+        return {}
+
+    def test_code_steps_get_the_time_left_and_keep_time_to_restore_code(self):
+        deadline = self.clock.deadline(100)
+
+        result = companion.select_account(TARGET_EMAIL, deadline=deadline)
+
+        self.assertTrue(result["ok"])
+        reserve = companion.deadlines.CODE_RESTORE_RESERVE
+        # The old identity read and the forward cswap both leave the restore reserve.
+        self.assertEqual(self.identity_timeouts[0], min(15, 100 - reserve))
+        self.assertEqual(self.backend_calls, [(("switch", TARGET_EMAIL, "--json"), 100 - 1 - reserve)])
+        self.assertEqual(self.identity_timeouts[1], 15)
+        self.refresh.assert_called_once_with(TARGET_EMAIL)
+        self.assertIs(self.browser_request.call_args.kwargs["deadline"], deadline)
+
+    def test_code_switch_is_not_started_without_time_to_restore_it(self):
+        self.clock.now = 0
+        deadline = self.clock.deadline(50)
+        self.clock.now = 6
+
+        result = companion.select_account(TARGET_EMAIL, deadline=deadline)
+
+        self.assertEqual(result, {"ok": False, "error": "code_switch_failed"})
+        self.assertEqual(self.backend_calls, [])
+        self.browser_request.assert_not_called()
+
+    def test_timed_out_cswap_restores_previous_code_login_before_the_deadline(self):
+        self.backend_failures = 1
+        deadline = self.clock.deadline(120)
+
+        result = companion.select_account(TARGET_EMAIL, deadline=deadline)
+
+        self.assertEqual(result, {"ok": False, "error": "code_switch_failed"})
+        self.assertEqual([call[0] for call in self.backend_calls],
+                         [("switch", TARGET_EMAIL, "--json"), ("switch", OLD_EMAIL, "--json")])
+        forward, restore = (call[1] for call in self.backend_calls)
+        self.assertEqual(forward, 60)
+        self.assertEqual(restore, 120 - 1 - 60)
+        self.assertLessEqual(self.clock.now, 120)
+        self.browser_request.assert_not_called()
+
+    def test_cache_repair_is_skipped_when_it_could_overrun_the_deadline(self):
+        self.backend_seconds = 45
+        deadline = self.clock.deadline(70)
+
+        companion.switch_code(TARGET_EMAIL, deadline)
+
+        self.refresh.assert_not_called()
+        events = companion.event_log.recent(self.base)
+        self.assertEqual(events[-1]["error"], "code_cache_sync_skipped")
+
+    def test_popup_selection_uses_the_extension_deadline_within_bounds(self):
+        fake_swap = types.ModuleType("claude_swap")
+        fake_swap.macos_keychain = mock.Mock()
+        cases = (
+            (90, 90),
+            (600, companion.deadlines.POPUP_BUDGET),
+            (None, companion.deadlines.LEGACY_POPUP_BUDGET),
+            ("soon", companion.deadlines.LEGACY_POPUP_BUDGET),
+            (True, companion.deadlines.LEGACY_POPUP_BUDGET),
+        )
+        for offset, expected in cases:
+            with self.subTest(offset=offset):
+                message = {"action": "select", "email": TARGET_EMAIL}
+                if isinstance(offset, (int, float)) and not isinstance(offset, bool):
+                    message["deadline"] = (companion.time.time() + offset) * 1000
+                elif offset is not None:
+                    message["deadline"] = offset
+                with (
+                    mock.patch.dict(sys.modules, {"claude_swap": fake_swap}),
+                    mock.patch.object(companion, "select_account", return_value={"ok": True}) as select,
+                ):
+                    companion.handle_native(message)
+                remaining = select.call_args.kwargs["deadline"].remaining()
+                self.assertAlmostEqual(remaining, expected, delta=1)
+                self.assertTrue(select.call_args.kwargs["verified_browser"])
+
+    def test_menu_switch_runs_under_the_menu_budget(self):
+        output = io.StringIO()
+        with (
+            mock.patch.object(companion.sys, "argv", ["companion.py", "switch", TARGET_EMAIL]),
+            mock.patch.object(companion, "select_account", return_value={"ok": True}) as select,
+            redirect_stdout(output),
+        ):
+            companion.main()
+        remaining = select.call_args.kwargs["deadline"].remaining()
+        self.assertAlmostEqual(remaining, companion.deadlines.MENU_BUDGET, delta=1)
+        self.assertLess(companion.deadlines.MENU_BUDGET, 350)
+        self.assertEqual(json.loads(output.getvalue()), {"ok": True})
+
+
+if __name__ == "__main__":
+    unittest.main()

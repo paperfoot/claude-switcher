@@ -271,6 +271,74 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(host.proc.wait(timeout=2), 0)
         self.assertFalse(self.socket_path.exists())
 
+    def test_switch_deadline_bounds_host_reply_and_extension_expiry(self):
+        host = self.start_host(setup="nt.BROWSER_ROLLBACK_GRACE = 0.2")
+        deadline = (time.time() + 0.5) * 1000
+        with self.connect() as client:
+            client.sendall(json.dumps({"id": "switch-1", "command": "switch",
+                                       "email": "one@example.com", "deadline": deadline}).encode() + b"\n")
+            forwarded = _read_native(host.proc.stdout)
+            self.assertEqual(forwarded["email"], "one@example.com")
+            self.assertNotIn("deadline", forwarded)
+            self.assertAlmostEqual(forwarded["expiresAt"], deadline - 200, delta=50)
+            started = time.monotonic()
+            self.assertEqual(_read_line(client, timeout=2), {"ok": False, "error": "browser_timeout"})
+            self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_switch_without_time_to_restore_is_refused_without_forwarding(self):
+        host = self.start_host()
+        deadline = (time.time() + native_transport.BROWSER_ROLLBACK_GRACE - 5) * 1000
+        with self.connect() as client:
+            client.sendall(json.dumps({"id": "late", "command": "switch",
+                                       "email": "one@example.com", "deadline": deadline}).encode() + b"\n")
+            self.assertEqual(_read_line(client), {"ok": False, "error": "browser_timeout"})
+        readable, _, _ = select.select([host.proc.stdout], [], [], 0.1)
+        self.assertEqual(readable, [])
+
+    def test_switch_deadline_and_fields_are_strictly_validated(self):
+        host = self.start_host()
+        base = '{"id":"x","command":"switch","email":"one@example.com"'
+        with self.connect() as client:
+            for suffix in (',"deadline":"soon"}', ',"deadline":true}', ',"deadline":NaN}',
+                           ',"deadline":-1}', ',"deadline":1e400}', ',"expiresAt":1}'):
+                with self.subTest(suffix=suffix):
+                    client.sendall((base + suffix + "\n").encode())
+                    self.assertEqual(_read_line(client), {"ok": False, "error": "invalid_request"})
+            client.sendall(b'{"id":"s","command":"status","deadline":1}\n')
+            self.assertEqual(_read_line(client), {"ok": False, "error": "invalid_request"})
+        readable, _, _ = select.select([host.proc.stdout], [], [], 0.1)
+        self.assertEqual(readable, [])
+
+    def test_send_request_carries_deadline_and_stops_waiting_after_it(self):
+        self.socket_path.parent.mkdir(mode=0o700)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.socket_path))
+        listener.listen(1)
+        captured = []
+
+        def serve():
+            connection, _ = listener.accept()
+            with connection:
+                captured.append(_read_line(connection))
+                time.sleep(0.6)
+            listener.close()
+
+        server = threading.Thread(target=serve)
+        server.start()
+        original_margin = native_transport.CLIENT_DEADLINE_MARGIN
+        native_transport.CLIENT_DEADLINE_MARGIN = 0.05
+        try:
+            started = time.monotonic()
+            deadline = (time.time() + 0.2) * 1000
+            result = native_transport.send_request(
+                str(self.socket_path), "switch", "one@example.com", deadline=deadline)
+        finally:
+            native_transport.CLIENT_DEADLINE_MARGIN = original_margin
+        self.assertEqual(result, {"ok": False, "error": "host_timeout"})
+        self.assertLess(time.monotonic() - started, 0.5)
+        server.join(timeout=2)
+        self.assertEqual(captured[0]["deadline"], deadline)
+
     def test_running_local_request_does_not_block_status_or_other_requests(self):
         host = self.start_host(handler=BLOCKING_HANDLER)
         host.write_native({"type": "request", "id": "select-1", "action": "slow"})
