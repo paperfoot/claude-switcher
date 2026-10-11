@@ -478,6 +478,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             lastCoordinatedCheck = Date()
+            if config.autoSwitch, autoSwitchTimer == nil { scheduleAutoSwitch() }
             if let result {
                 coordinatedSnapshot = result
                 selectedEmailOverride = nil
@@ -1570,7 +1571,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try? CoordinatedSwitching.autoTick(setup: setup, threshold: threshold)
             }.value
             isAutoSwitching = false
-            guard let result, result.switched == true, let email = result.codeEmail else { return }
+            guard let result else {
+                // No readable answer: re-read the real state so the menu never shows a stale login.
+                refreshCoordinatedAccounts(setup: setup, force: true)
+                return
+            }
+            guard result.switched == true else { return }
+            guard result.ok, let email = result.codeEmail else {
+                // Code moved but the switch could not finish (unknown account, Chrome trouble).
+                coordinatedGeneration += 1
+                switchMessage = "Automatic switch needs attention · check Chrome and Code"
+                statusFeedback?.finish(ok: result.codeEmail != nil, browserReady: false,
+                                       email: result.codeEmail ?? "Claude", message: switchMessage ?? "") {}
+                refreshCoordinatedAccounts(setup: setup, force: true)
+                rebuildIfVisible()
+                return
+            }
             coordinatedGeneration += 1
             selectedEmailOverride = email
             let browserReady = result.browserReady == true
