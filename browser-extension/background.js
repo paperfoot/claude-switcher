@@ -13,6 +13,15 @@ let knownStatus = {email: null, accounts: []};
 let healthCheckRunning = false;
 let lastHealthCheckAt = 0;
 let lastSessionSavedAt = 0;
+let lastSessionCheckedAt = 0;
+// Background saves are skipped while this profile's session cookies are unchanged
+// since its last save; only a digest is stored, never a value. Renewed cookies
+// change the digest and are saved at once. An unchanged login is still re-saved
+// after MAX_SAVE_AGE_MS, so a shared vault entry another profile replaced heals.
+const SESSION_COOKIES = ['sessionKey', 'sessionKeyLC', 'sessionKeyV3', 'sessionKeyV3LC'];
+const SAVED_SESSION_KEY = 'savedSession';
+const SESSION_CHECK_MS = 5 * 60 * 1000;
+const MAX_SAVE_AGE_MS = 6 * 60 * 60 * 1000;
 let sessionSaveInFlight = null;
 let probesInFlight = 0;
 const requests = new Map();
@@ -106,12 +115,39 @@ const selections = new SelectionMemory({
   get: async () => (await chrome.storage.local.get(SELECTION_KEY))[SELECTION_KEY],
   set: value => chrome.storage.local.set({[SELECTION_KEY]: value}),
 }, digest);
-function saveCurrentSession() {
+async function sessionDigest(cookies) {
+  const rows = cookies
+    .filter(cookie => claudeCookie(cookie) && SESSION_COOKIES.includes(cookie.name))
+    .map(cookie => JSON.stringify([cookie.name, cookie.domain, cookie.path, cookie.storeId ?? null,
+      cookie.partitionKey ?? null, cookie.value, cookie.session ? null : cookie.expirationDate ?? null]))
+    .sort();
+  return rows.length ? digest(rows.join('\n')) : null;
+}
+async function lastSave() {
+  const stored = await chrome.storage.local.get(SAVED_SESSION_KEY).catch(() => ({}));
+  return stored?.[SAVED_SESSION_KEY];
+}
+// `force` is for the popup's explicit save, which always captures and stores.
+function saveCurrentSession({force = false} = {}) {
   sessionSaveInFlight ??= (async () => {
     try {
-      const result = await switcher.save();
+      lastSessionCheckedAt = Date.now();
+      if (!force) {
+        const current = await sessionDigest(await browser.cookies());
+        // Signed out: nothing to save, and no probes or diagnostics every check.
+        if (!current) return {ok: false, error: 'web_signed_out'};
+        const saved = await lastSave();
+        if (saved?.digest === current && Date.now() - saved.savedAt < MAX_SAVE_AGE_MS) {
+          return {ok: true, unchanged: true};
+        }
+      }
+      let entry;
+      const result = await switcher.save(saved => { entry = saved; });
       lastSessionSavedAt = Date.now();
       knownStatus = {...knownStatus, email: result.email};
+      // The digest of exactly what was stored: a renewal during the save differs.
+      const stored = {digest: await sessionDigest(entry?.cookies ?? []), savedAt: lastSessionSavedAt};
+      await chrome.storage.local.set({[SAVED_SESSION_KEY]: stored}).catch(() => {});
       // Notices a sign-in this companion did not make before any catch-up runs.
       await selections.observed(result.email).catch(() => {});
       return result;
@@ -168,7 +204,7 @@ async function maintainConnection() {
   try {
     await native('ping',{},5000);
     lastHealthCheckAt=Date.now();
-    if(Date.now()-lastSessionSavedAt>=5*60*1000)await saveCurrentSession().catch(()=>{});
+    if (Date.now() - lastSessionCheckedAt >= SESSION_CHECK_MS) await saveCurrentSession().catch(() => {});
     if (catchUpDue) await runCatchUp();
   } catch {
     if(port===previous && previous && !popupSwitchInProgress && !incomingCommands && !requests.size) {
@@ -182,7 +218,7 @@ function switching() {
   return popupSwitchInProgress || commandSwitches > 0;
 }
 function statusExtras() {
-  return {version: chrome.runtime.getManifest().version, lastHealthCheckAt, lastSessionSavedAt};
+  return {version: chrome.runtime.getManifest().version, lastHealthCheckAt, lastSessionSavedAt, lastSessionCheckedAt};
 }
 async function handleCommand(message) {
   if (message.command === 'switch') {
@@ -283,14 +319,14 @@ chrome.runtime.onMessage.addListener((msg,sender,send)=>{
     await selections.manualLogin().catch(() => {});
     return switcher.newLogin();
   };
-  const work=action==='save'?saveCurrentSession():action==='newLogin'?newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(failure('unknown_action', 'Unknown action'));
+  const work=action==='save'?saveCurrentSession({force: true}):action==='newLogin'?newLogin():action==='status'?switcher.status():action==='switch'?selectBoth():Promise.reject(failure('unknown_action', 'Unknown action'));
   // The popup maps `error`, always a code; `message` is only a fallback for people.
   work.then(result => send(result)).catch(error => send({ok: false, error: error?.code || 'unknown_error', message: error?.message}));
   return true;
 });
 let saveTimer;
 chrome.cookies.onChanged.addListener(change=>{
-  if(change.removed || !['sessionKey','sessionKeyLC','sessionKeyV3','sessionKeyV3LC'].includes(change.cookie.name) || !claudeCookie(change.cookie))return;
+  if(change.removed || !SESSION_COOKIES.includes(change.cookie.name) || !claudeCookie(change.cookie))return;
   // Bootstrap can renew cookies itself. Do not turn verification into another save loop.
   if(sessionSaveInFlight || probesInFlight || incomingCommands || popupSwitchInProgress)return;
   clearTimeout(saveTimer);

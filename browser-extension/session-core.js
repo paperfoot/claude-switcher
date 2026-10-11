@@ -119,8 +119,10 @@ export class SessionSwitcher {
     if (after !== before) throw failure('web_identity_changed', 'Account changed while saving; try again');
     return {email: emailKey(before), cookies, savedAt: Date.now(), url: await this.browser.currentURL()};
   }
-  save() { return this.serialize(async () => {
-    const entry = await this.capture(); await this.vault.put(entry); return {ok:true,email:entry.email};
+  // `onSaved` receives the stored entry, so a caller can remember what it saved
+  // without the cookies ever leaving this module in a result.
+  save(onSaved) { return this.serialize(async () => {
+    const entry = await this.capture(); await this.vault.put(entry); onSaved?.(entry); return {ok:true,email:entry.email};
   }); }
   newLogin() { return this.serialize(async () => {
     if (await this.probe()) await this.vault.put(await this.capture());
