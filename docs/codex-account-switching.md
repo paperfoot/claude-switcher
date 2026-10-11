@@ -8,7 +8,7 @@ Add a Codex section to the existing menu, using the installed official Codex run
 
 The closest source foundation is [liuzhao1225/codex-account-switcher](https://github.com/liuzhao1225/codex-account-switcher/tree/7312cfac3184b77e756a704748a9dab04b443ef8). Its normal-quit policy is preferable for a Mac with concurrent agent work. It still needs adaptation and live verification; this review does not establish that a complete switch works on this Mac.
 
-A seamless change of the running desktop user without reopening the app is **not verified**. Version 0.8.0 now implements the normal-reopen approach in the existing menu, with Keychain storage, aliases, compact usage, and failure recovery. See [0.8.0 verification](verification-0.8.0.md). The running Codex session was left untouched during development.
+A seamless change of the running desktop user without reopening the app is **not verified**. Version 0.8.0 now implements the normal-reopen approach in the existing menu, with Keychain storage, aliases, compact usage, and failure recovery. See the [changelog](../CHANGELOG.md). The running Codex session was left untouched during development.
 
 ## What the installed runtime actually supports
 
