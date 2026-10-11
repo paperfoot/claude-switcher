@@ -16,7 +16,7 @@ host_disconnected invalid_browser_result invalid_host_response response_too_larg
 backend_unavailable keychain_error invalid_data session_save_failed native_disconnected code_cache_sync_failed
 code_cache_sync_skipped keychain_unavailable unknown_account unknown_action invalid_request
 duplicate_id request_too_large local_handler_error host_busy selection_changed
-native_unavailable web_signed_out web_identity_changed
+native_unavailable web_signed_out web_identity_changed auto_switch_failed
 native_timeout unauthorized forbidden network_error rate_limited server_error'''.split())
 STEPS = {'capture_session', 'clear_cookies', 'restore_cookies', 'verify_identity', 'activate_code', 'save_session', 'connect'}
 PROBES = {'verified', 'unauthorized', 'forbidden', 'network_error', 'rate_limited', 'server_error', 'invalid_response', 'identity_mismatch'}
@@ -27,7 +27,7 @@ def _record(event, fields):
         return None
     record = {'at': datetime.now(timezone.utc).isoformat(timespec='milliseconds'), 'event': event}
     for key, value in fields.items():
-        if key == 'scope' and value in ('chrome', 'claude'):
+        if key == 'scope' and value in ('chrome', 'claude', 'auto'):
             record[key] = value
         elif key in ('error', 'browserError') and isinstance(value, str):
             record[key] = value if value in ERRORS else 'unknown_error'

@@ -254,6 +254,89 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
         return result
 
 
+AUTO_THRESHOLD_RANGE = (50.0, 99.9)
+
+
+def auto_events(threshold, timeout):
+    """One `cswap auto --once` decision as JSON events. claude-swap paces its own usage
+    polls through its usage store, so calling this every minute stays within rate limits."""
+    result = subprocess.run([configuration()['cswap'], 'auto', '--once', '--json', '--threshold', f'{threshold:g}'],
+                            env=clean_environment(), stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+    # Exit 0: switched. 2: nothing to do. 3: no viable target. 1: the engine failed.
+    if result.returncode not in (0, 2, 3):
+        raise RuntimeError('auto_switch_failed')
+    events = []
+    for line in result.stdout.decode('utf-8', 'replace').splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def auto_tick(threshold, deadline=None, events=None):
+    """Let claude-swap decide whether Code should move; when it does, Chrome follows."""
+    deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
+    low, high = AUTO_THRESHOLD_RANGE
+    if not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or not low <= threshold <= high:
+        return {'ok': False, 'error': 'invalid_request'}
+    BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(BASE / 'switch.lock', 'a') as lock:
+        os.chmod(BASE / 'switch.lock', 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'ok': True, 'switched': False, 'reason': 'switch_in_progress'}
+        previous = code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT))
+        if events is None:
+            events = auto_events(threshold, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT))
+        switch = next((event for event in events if event.get('event') == 'switch' and not event.get('dryRun')), None)
+        if switch is None:
+            if any(event.get('event') == 'all-exhausted' for event in events):
+                reason = 'all_exhausted'
+            else:
+                reason = next((str(event.get('reason')) for event in events if event.get('event') == 'no-switch'),
+                              'no_action')
+            return {'ok': True, 'switched': False, 'reason': reason}
+        trigger = switch.get('trigger') if isinstance(switch.get('trigger'), str) else None
+        target = switch.get('to') if isinstance(switch.get('to'), dict) else {}
+        # claude-swap has already moved Code. Confirm it before Chrome follows.
+        try:
+            email = validate_email(str(target.get('email') or ''))
+        except ValueError:
+            event_log.emit(BASE, 'switch_finished', scope='auto', ok=False, error='unknown_account')
+            return {'ok': False, 'switched': True, 'error': 'unknown_account', 'trigger': trigger}
+        if code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT)) != email:
+            event_log.emit(BASE, 'switch_finished', scope='auto', ok=False, error='code_switch_failed')
+            return {'ok': False, 'switched': True, 'error': 'code_switch_failed', 'trigger': trigger}
+        if deadline.remaining() >= deadlines.CACHE_REPAIR_MINIMUM:
+            refresh_code_cache(email)
+        selected_at = time.time()
+        try:
+            web = browser_request('switch', email, deadline=deadline, selected_at=selected_at)
+        except FileNotFoundError:
+            web = {'ok': False, 'error': 'browser_missing'}
+        except (OSError, TimeoutError, ValueError, deadlines.DeadlineExceeded):
+            web = {'ok': False, 'error': 'web_unavailable'}
+        if web.get('ok') and web.get('email') != email:
+            web = {'ok': False, 'error': 'web_identity_mismatch'}
+        ready = bool(web.get('ok'))
+        # The same state a menu switch writes, so a closed Chrome profile catches up later.
+        state = {'ok': True, 'codeEmail': email, 'webEmail': email if ready else None, 'browserReady': ready,
+                 'selectedAt': selected_at, 'automatic': True, 'trigger': trigger,
+                 'message': 'Switched automatically'}
+        if not ready and web.get('error') != 'browser_missing':
+            state.update(ok=False, partial=True, error='code_only_after_web_failure',
+                         browserError=web.get('error', 'web_unavailable'))
+        atomic_json(STATE, state)
+        event_log.emit(BASE, 'switch_finished', scope='auto', ok=ready or web.get('error') == 'browser_missing',
+                       browserReady=ready, **({'browserError': web.get('error')} if not ready else {}))
+        return {'ok': True, 'switched': True, 'codeEmail': email, 'previousEmail': previous, 'trigger': trigger,
+                'browserReady': ready, 'browserError': None if ready else web.get('error', 'web_unavailable')}
+
+
 def snapshot(deadline=None):
     deadline = deadline or deadlines.Deadline(deadlines.STATUS_BUDGET)
     data = run_backend('list', '--json', timeout=deadline.timeout(deadlines.CSWAP_TIMEOUT))
@@ -509,6 +592,12 @@ def main():
                                     deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
         elif command == 'snapshot':
             result = snapshot(deadlines.Deadline(deadlines.STATUS_BUDGET))
+        elif command == 'auto-tick':
+            try:
+                threshold = float(sys.argv[2]) if len(sys.argv) > 2 else 95.0
+            except ValueError:
+                threshold = float('nan')
+            result = auto_tick(threshold, deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
         elif command == 'switch' and len(sys.argv) < 3:
             result = {'ok': False, 'error': 'invalid_request', 'message': 'Usage: companion.py switch EMAIL'}
         elif command == 'switch':
