@@ -91,6 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var paletteHotKey: GlobalHotKey?
 
     private var autoSwitchTimer: Timer?
+    /// Watches a partial switch until Chrome signs in to the selected account.
+    private var chromeFinishTimer: Timer?
     private var isAutoSwitching = false
 
     private static let actions = MenuBuilder.Actions(
@@ -512,9 +514,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return (email, expiry)
         }.sorted { $0.expiry < $1.expiry }
         guard let first = soon.first else { return nil }
-        if soon.count > 1 { return "\(soon.count) Chrome logins expire soon · sign in to them again in Chrome" }
+        // Choosing the account opens claude.ai's sign-in page, and signing in finishes the switch.
+        if soon.count > 1 { return "\(soon.count) Chrome logins need a fresh sign-in · choose one to sign in" }
         let when = first.expiry <= now ? "has expired" : "expires \(MenuBuilder.clock(first.expiry, now: now))"
-        return "Chrome login for \(first.email) \(when) · sign in again in Chrome"
+        return "Chrome login for \(first.email) \(when) · choose it to sign in again"
     }
 
     @objc private func switchAccount(_ sender: NSMenuItem) {
@@ -530,6 +533,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isSwitchingAccount = true
         coordinatedGeneration += 1
         let generation = coordinatedGeneration
+        chromeFinishTimer?.invalidate()
         switchMessage = "Switching…"
         statusFeedback?.begin(email: email)
         rebuildIfVisible()
@@ -547,9 +551,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.switchMessage = nil
                 self.rebuildIfVisible()
             }
+            if let result, result.codeSwitched, result.browserReady != true {
+                watchChromeFinish(result, email: email, generation: generation, setup: setup)
+            }
             refreshCoordinatedAccounts(setup: setup, force: true)
             rebuildIfVisible()
         }
+    }
+
+    /// After a partial switch, signing in to the selected account in Chrome finishes it:
+    /// the companion upgrades the saved state, and this turns the warning into a tick.
+    private func watchChromeFinish(_ partial: CoordinatedResult, email: String, generation: Int,
+                                   setup: CoordinatedSetup) {
+        chromeFinishTimer?.invalidate()
+        let giveUp = Date().addingTimeInterval(30 * 60)
+        let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard self.coordinatedGeneration == generation, Date() < giveUp else {
+                    self.chromeFinishTimer?.invalidate(); return
+                }
+                guard let saved = CoordinatedResult.savedState(), partial.isFinished(by: saved) else { return }
+                self.chromeFinishTimer?.invalidate()
+                self.switchMessage = "Chrome and Code switched"
+                self.statusFeedback?.finish(ok: true, browserReady: true, email: email,
+                                            message: "Chrome and Code switched") { [weak self] in
+                    guard let self, self.coordinatedGeneration == generation else { return }
+                    self.switchMessage = nil
+                    self.rebuildIfVisible()
+                }
+                self.refreshCoordinatedAccounts(setup: setup, force: true)
+                self.rebuildIfVisible()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        chromeFinishTimer = timer
     }
 
     private var askedForAccessibility = false
@@ -1631,6 +1667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             rebuildIfVisible()
         }
     }
+
 
     /// The palette's view of the app, from the same state the menu shows. No I/O.
     private func paletteContext() -> PaletteContext {

@@ -28,6 +28,24 @@ struct CoordinatedSwitchingTests {
         #expect(result.summary == "Code switched · Chrome is not responding")
     }
 
+    @Test func anOpenedSignInPageTellsTheUserHowToFinish() throws {
+        let json = #"{"ok":false,"partial":true,"codeEmail":"a@example.com","error":"code_only_after_web_failure","browserError":"web_login_expired","loginOpened":true,"selectedAt":100.5}"#
+        let result = try JSONDecoder().decode(CoordinatedResult.self, from: Data(json.utf8))
+        #expect(result.summary == "Code switched · sign in on the claude.ai tab to finish")
+        let closed = #"{"ok":false,"partial":true,"codeEmail":"a@example.com","error":"code_only_after_web_failure","browserError":"web_login_expired"}"#
+        #expect(try JSONDecoder().decode(CoordinatedResult.self, from: Data(closed.utf8)).summary
+                == "Code switched · Chrome login expired, sign in to claude.ai once")
+    }
+
+    @Test func aPartialSwitchIsFinishedOnlyBySavedStateForTheSameSelection() throws {
+        func decode(_ json: String) throws -> CoordinatedResult { try JSONDecoder().decode(CoordinatedResult.self, from: Data(json.utf8)) }
+        let partial = try decode(#"{"ok":false,"partial":true,"codeEmail":"a@example.com","error":"code_only_after_web_failure","selectedAt":100.5}"#)
+        #expect(partial.isFinished(by: try decode(#"{"ok":true,"codeEmail":"A@example.com","browserReady":true,"selectedAt":100.5}"#)))
+        #expect(!partial.isFinished(by: try decode(#"{"ok":true,"codeEmail":"a@example.com","browserReady":true,"selectedAt":200}"#)))
+        #expect(!partial.isFinished(by: try decode(#"{"ok":true,"codeEmail":"b@example.com","browserReady":true,"selectedAt":100.5}"#)))
+        #expect(!partial.isFinished(by: partial))
+    }
+
     @Test func savedChromeLoginExpiriesAreDecoded() throws {
         let json = #"{"accounts":[],"codeEmail":null,"browser":{"ok":true,"email":"one@example.com","accounts":["one@example.com"],"expiries":{"one@example.com":1790000000.5}}}"#
         let browser = try JSONDecoder().decode(CoordinatedSnapshot.self, from: Data(json.utf8)).browser

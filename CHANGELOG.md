@@ -4,6 +4,8 @@ User-visible changes, newest first. From 0.6.1 on, version numbers belong to thi
 
 ## Unreleased
 
+- Switching to an account whose Chrome login claude.ai signed out now opens claude.ai's sign-in page in Chrome, without signing out the account you were on. Sign in once and the switch finishes by itself: the menu's warning turns into a tick and Claude in Chrome follows. You never need to log out of one account to log in to another, which is what kills saved logins.
+- Saved Chrome logins are checked against claude.ai every six hours, so the menu warns about a dead one before you pick it. Companion 0.9.3.
 - When a switch reaches Code but Chrome's saved login for that account was signed out on claude.ai, the menu now says the Chrome login expired and to sign in once, instead of a vague "Chrome could not switch". Any other Chrome failure says Chrome kept the previous account. Companion 0.9.2.
 - The palette no longer shows the name of the model behind free-form requests: the row reads **Ask**, and its answers show only how likely each one is.
 

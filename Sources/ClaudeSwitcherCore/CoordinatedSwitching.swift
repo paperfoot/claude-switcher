@@ -80,6 +80,26 @@ public struct CoordinatedResult: Decodable, Sendable {
     /// nil when that step did not run.
     public let extensionReady: Bool?
     public let extensionError: String?
+    /// When the companion recorded this selection, in Unix seconds; matches the saved state.
+    public let selectedAt: Double?
+    /// Chrome's saved login was dead, so the companion opened claude.ai's sign-in page.
+    /// Signing in there finishes the switch on its own.
+    public let loginOpened: Bool?
+
+    /// The last selection's saved state, which the companion upgrades to a full success
+    /// once Chrome signs in to the selected account after a partial switch.
+    public static var stateURL: URL { Config.configURL.deletingLastPathComponent().appendingPathComponent("coordinated-state.json") }
+    public static func savedState(at url: URL = stateURL) -> Self? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Self.self, from: data)
+    }
+
+    /// `saved` is this partial switch, now finished in Chrome too.
+    public func isFinished(by saved: Self) -> Bool {
+        guard let selectedAt, let codeEmail, saved.ok, saved.browserReady == true,
+              saved.selectedAt == selectedAt else { return false }
+        return saved.codeEmail?.caseInsensitiveCompare(codeEmail) == .orderedSame
+    }
 
     /// Code now uses the selected account. True for a full success and for a partial
     /// result where only Chrome failed, which deserves amber rather than red.
@@ -99,7 +119,10 @@ public struct CoordinatedResult: Decodable, Sendable {
         case "switch_in_progress": return "Another switch is finishing"
         case "code_only_after_web_failure":
             switch browserError {
-            case "web_login_needed", "web_login_expired": return "Code switched · Chrome login expired, sign in to claude.ai once"
+            case "web_login_needed", "web_login_expired":
+                return loginOpened == true
+                    ? "Code switched · sign in on the claude.ai tab to finish"
+                    : "Code switched · Chrome login expired, sign in to claude.ai once"
             case "host_timeout", "host_disconnected", "host_unavailable", "web_unavailable": return "Code switched · Chrome is not responding"
             case "browser_timeout": return "Code switched · Chrome took too long"
             case "switch_in_progress": return "Code switched · Chrome is busy"
