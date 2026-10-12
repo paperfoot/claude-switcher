@@ -5,6 +5,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
 import {SessionSwitcher, SelectionMemory, failure, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
+import {OfficialFollower, OFFICIAL_ID, OPTIONS_URL} from './official-extension.js';
 
 const EMAIL = {
   A: 'a@example.com',
@@ -97,6 +98,7 @@ async function makeHarness({
   nativeOverrides = {},
   storage = {selection: {appliedAt: 0, identity: null}},
   deferSelect = false,
+  official = null,
 } = {}) {
   let jar = clone(initialCookies);
   const alarmListeners = [];
@@ -177,7 +179,24 @@ async function makeHarness({
     },
   };
 
+  const officialCalls = [];
+  const tabListeners = [];
   const chrome = {
+    management: {
+      async get(id) {
+        officialCalls.push(['get', id]);
+        if (!official) throw new Error(`Failed to find extension with id ${id}`);
+        return clone(official);
+      },
+      async setEnabled(id, enabled) { officialCalls.push(['setEnabled', id, enabled]); official.enabled = enabled; },
+    },
+    windows: {
+      async create(details) { officialCalls.push(['createWindow', clone(details)]); return {id: 77, tabs: [{id: 78}]}; },
+      async remove(id) { officialCalls.push(['removeWindow', id]); },
+    },
+    scripting: {
+      async executeScript(details) { officialCalls.push(['executeScript', details.target.tabId, details.args]); return [{result: 'clicked'}]; },
+    },
     alarms: {
       create() {},
       onAlarm: {addListener(listener) { alarmListeners.push(listener); }},
@@ -220,6 +239,9 @@ async function makeHarness({
         return clone(tab);
       },
       async query() { return clone(tabs); },
+      onUpdated: {addListener(listener) { tabListeners.push(listener); }},
+      async remove(id) { officialCalls.push(['removeTab', id]); },
+      async reload(id) { officialCalls.push(['reloadTab', id]); },
       async update(id, details) {
         const tab = tabs.find(candidate => candidate.id === id);
         if (!tab) throw new Error('Unknown tab');
@@ -241,12 +263,13 @@ async function makeHarness({
   };
 
   const source = await readFile(new URL('./background.js', import.meta.url), 'utf8');
-  const executable = source.replace(/^import \{[^}]+\} from '\.\/session-core\.js';\n/, '');
+  const executable = source.replace(/^import \{[^}]+\} from '\.\/session-core\.js'; import \{OfficialFollower\} from '\.\/official-extension\.js';\n/, '');
   assert.notEqual(executable, source, 'background module import was removed for dependency injection');
   vm.runInNewContext(executable, {
     AbortSignal,
     SessionSwitcher,
     SelectionMemory,
+    OfficialFollower,
     TextEncoder,
     failure,
     URL,
@@ -268,6 +291,12 @@ async function makeHarness({
       return EMAIL[key] ?? null;
     },
     jar: () => clone(jar),
+    officialCalls,
+    official: () => official,
+    async tabUpdated(tabId, change, tab) {
+      for (const listener of tabListeners) listener(tabId, change, tab);
+      for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+    },
     storage,
     nativeRequests,
     requested(action) {
@@ -623,3 +652,58 @@ for (const [state, target] of [
     assert.equal(harness.nativeRequests.some(message => message.action === 'browser_ready'), false);
   });
 }
+
+const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize?' + new URLSearchParams({
+  client_id: 'dae2cad8-15c5-43d2-9046-fcaecc135fa4',
+  redirect_uri: `chrome-extension://${OFFICIAL_ID}/oauth_callback.html`,
+  response_type: 'code',
+});
+
+test('official commands report a missing extension and a different Claude.ai account', async () => {
+  const harness = await makeHarness();
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+  const missing = await harness.sendMenu({id: 'o1', command: 'official_prepare', email: EMAIL.A});
+  assert.deepEqual(clone(missing.result), {ok: true, state: 'not_installed'});
+  const other = await harness.sendMenu({id: 'o2', command: 'official_prepare', email: EMAIL.B});
+  assert.deepEqual(clone(other.result), {ok: false, error: 'web_identity_mismatch'});
+  const finish = await harness.sendMenu({id: 'o3', command: 'official_finish'});
+  assert.deepEqual(clone(finish.result), {ok: true, authorized: false, consent: 'none'});
+});
+
+test('official prepare waits for a running switch', async () => {
+  const harness = await makeHarness({deferSelect: true, official: {id: OFFICIAL_ID, enabled: true}});
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+  const popup = harness.sendPopup({action: 'switch', email: EMAIL.B});
+  await harness.waitForNative('select');
+  const busy = await harness.sendMenu({id: 'o4', command: 'official_prepare', email: EMAIL.B});
+  assert.deepEqual(clone(busy.result), {ok: false, error: 'switch_in_progress'});
+  assert.deepEqual(harness.officialCalls, []);
+  harness.resolveDeferred('select');
+  await popup;
+});
+
+test('official prepare cycles the extension, opens its options and authorizes only its own consent page', async () => {
+  const harness = await makeHarness({official: {id: OFFICIAL_ID, enabled: true}});
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+  const prepared = await harness.sendMenu({id: 'o5', command: 'official_prepare', email: EMAIL.A});
+  assert.deepEqual(clone(prepared.result), {ok: true, state: 'opened', windowId: 77});
+  assert.deepEqual(harness.officialCalls, [
+    ['get', OFFICIAL_ID],
+    ['setEnabled', OFFICIAL_ID, false],
+    ['setEnabled', OFFICIAL_ID, true],
+    ['createWindow', {url: OPTIONS_URL, focused: false, type: 'normal', width: 900, height: 760}],
+  ]);
+  harness.officialCalls.length = 0;
+  await harness.tabUpdated(9, {status: 'complete'}, {id: 9, url: AUTHORIZE_URL.replace('dae2cad8', 'aaaaaaaa')});
+  assert.deepEqual(harness.officialCalls, []);
+  await harness.tabUpdated(9, {status: 'complete'}, {id: 9, url: AUTHORIZE_URL});
+  assert.deepEqual(harness.officialCalls, [['executeScript', 9, [EMAIL.A]]]);
+  await harness.tabUpdated(9, {url: 'https://claude.ai/chrome/installed'}, {id: 9, url: 'https://claude.ai/chrome/installed'});
+  assert.deepEqual(harness.officialCalls.slice(1), [['removeTab', 9], ['reloadTab', 78]]);
+  const finish = await harness.sendMenu({id: 'o6', command: 'official_finish'});
+  assert.deepEqual(clone(finish.result), {ok: true, authorized: true, consent: 'clicked'});
+  assert.deepEqual(harness.officialCalls.at(-1), ['removeWindow', 77]);
+});
