@@ -128,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return self.automationLock != nil && self.configError == nil && !self.isBusy && !self.isSwitchingAccount && !self.codexBusy && self.updateProgress == nil
             }, changed: { [weak self] in self?.rebuildIfVisible() })
         desktopHistory?.start()
+        askForAccessibilityOnce()
         liveUsage = LiveUsageCache.load(profiles: config.profiles)
         nextUsageRefresh = liveUsage.mapValues { LiveUsagePolicy.nextRefresh(for: $0, now: Date()) }
 
@@ -559,6 +560,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard extensionError == "accessibility_needed", !askedForAccessibility else { return }
         askedForAccessibility = true
         // kAXTrustedCheckOptionPrompt's value; the global itself is not concurrency-safe.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    /// Pressing Log in on Chrome's Claude extension needs Accessibility. Ask once, at a
+    /// calm moment, rather than during the first switch; a refusal is not asked again here.
+    private func askForAccessibilityOnce() {
+        let key = "askedForAccessibilityAtLaunch"
+        guard CoordinatedSetup.load()?.enabled == true, !AXIsProcessTrusted(),
+              !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        askedForAccessibility = true
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }
