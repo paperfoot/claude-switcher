@@ -10,7 +10,7 @@ from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from bridge import companion
+from bridge import browser_profiles, companion
 
 
 OLD_EMAIL = "old@example.com"
@@ -1459,6 +1459,91 @@ class ExpiryBackfillTests(unittest.TestCase):
         # Each email is read at most once per process, including one with nothing saved.
         self.assertEqual(sorted(reads), sorted([TARGET_EMAIL, OLD_EMAIL]))
         self.assertNotIn("secret", (self.base / "web-accounts-meta.json").read_text())
+
+
+class FollowExtensionTests(unittest.TestCase):
+    """The official extension follows a verified switch without ever undoing it."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name) / "claude-switcher"
+        self.state = self.base / "coordinated-state.json"
+        self.stack = ExitStack()
+        self.stack.enter_context(mock.patch.object(companion, "BASE", self.base))
+        self.stack.enter_context(mock.patch.object(companion, "STATE", self.state))
+        self.stack.enter_context(mock.patch.object(
+            companion, "validate_email", autospec=True, side_effect=lambda email: email.lower()))
+        self.code_identity = self.stack.enter_context(mock.patch.object(
+            companion, "code_identity", autospec=True, return_value=OLD_EMAIL))
+        self.stack.enter_context(mock.patch.object(companion, "switch_code", autospec=True))
+        self.stack.enter_context(mock.patch.object(
+            companion, "refresh_code_cache", autospec=True, return_value={"ok": True}))
+        self.browser_request = self.stack.enter_context(mock.patch.object(
+            companion, "browser_request", autospec=True,
+            return_value={"ok": True, "email": TARGET_EMAIL, "profileCount": 1}))
+        self.follow = self.stack.enter_context(mock.patch.object(
+            browser_profiles, "follow_official", autospec=True,
+            return_value={"ok": True, "extensionReady": True, "extension": "opened", "profiles": []}))
+        self.stack.enter_context(mock.patch.object(companion.deadlines, "LOCK_WAIT", 0.05))
+
+    def tearDown(self):
+        self.stack.close()
+        self.temporary.cleanup()
+
+    def test_a_menu_switch_signs_the_official_extension_in_and_records_it(self):
+        result = companion.select_account(TARGET_EMAIL)
+        self.assertTrue(result["ok"])
+        self.assertIs(result["extensionReady"], True)
+        self.assertNotIn("extensionError", result)
+        self.assertEqual(self.follow.call_args.args[1], TARGET_EMAIL)
+        self.assertIs(json.loads(self.state.read_text())["extensionReady"], True)
+
+    def test_a_failure_is_reported_but_never_fails_the_switch(self):
+        self.follow.return_value = {"ok": True, "extensionReady": False, "extensionError": "accessibility_needed"}
+        result = companion.select_account(TARGET_EMAIL)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["browserReady"])
+        self.assertEqual(result["extensionError"], "accessibility_needed")
+        self.follow.side_effect = RuntimeError("boom")
+        result = companion.select_account(TARGET_EMAIL)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["extensionError"], "extension_follow_failed")
+
+    def test_skipped_when_chrome_did_not_switch_or_for_a_popup_selection(self):
+        self.browser_request.return_value = {"ok": False, "error": "browser_missing"}
+        companion.select_account(TARGET_EMAIL)
+        self.browser_request.return_value = {"ok": True, "email": TARGET_EMAIL, "profileCount": 0}
+        companion.select_account(TARGET_EMAIL)
+        companion.select_account(TARGET_EMAIL, verified_browser=True)
+        companion.select_account(TARGET_EMAIL, include_browser=False)
+        self.follow.assert_not_called()
+
+    def test_skipped_with_too_little_time_left(self):
+        deadline = companion.deadlines.Deadline(companion.deadlines.OFFICIAL_MINIMUM - 1)
+        self.assertEqual(companion.follow_extension(TARGET_EMAIL, deadline),
+                         {"extensionReady": False, "extensionError": "browser_timeout"})
+        self.follow.assert_not_called()
+
+    def test_a_chrome_only_switch_follows_too(self):
+        result = companion.select_browser(TARGET_EMAIL)
+        self.assertIs(result["extensionReady"], True)
+
+    def test_an_automatic_switch_follows_too(self):
+        self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]
+        events = [{"event": "switch", "trigger": "at-limit", "to": {"email": TARGET_EMAIL}}]
+        result = companion.auto_tick(95, events=events)
+        self.assertTrue(result["switched"])
+        self.assertIs(result["extensionReady"], True)
+        self.assertIs(json.loads(self.state.read_text())["extensionReady"], True)
+
+    def test_the_repair_command_runs_only_the_follow_step(self):
+        output = io.StringIO()
+        with mock.patch.object(companion.sys, "argv", ["companion.py", "extension-follow", TARGET_EMAIL]), \
+                redirect_stdout(output):
+            companion.main()
+        self.assertEqual(json.loads(output.getvalue()),
+                         {"ok": True, "email": TARGET_EMAIL, "extensionReady": True})
+        self.browser_request.assert_not_called()
 
 
 class LockWaitTests(unittest.TestCase):

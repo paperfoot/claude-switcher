@@ -299,6 +299,29 @@ class NativeTransportTests(unittest.TestCase):
                                     '"selectedAt":' + stamp + '}\n').encode())
                     self.assertEqual(_read_line(client), {"ok": False, "error": "invalid_request"})
 
+    def test_official_extension_commands_are_forwarded_and_validated(self):
+        host = self.start_host()
+        with self.connect() as client:
+            client.sendall(b'{"id":"p1","command":"official_prepare","email":"one@example.com"}\n')
+            forwarded = _read_native(host.proc.stdout)
+            self.assertEqual(forwarded, {"type": "command", "id": "p1", "command": "official_prepare",
+                                         "email": "one@example.com"})
+            host.write_native({"type": "result", "id": "p1", "result": {"ok": True, "state": "opened"}})
+            self.assertEqual(_read_line(client), {"ok": True, "state": "opened"})
+            client.sendall(b'{"id":"f1","command":"official_finish"}\n')
+            forwarded = _read_native(host.proc.stdout)
+            self.assertEqual(forwarded, {"type": "command", "id": "f1", "command": "official_finish"})
+            host.write_native({"type": "result", "id": "f1", "result": {"ok": True, "authorized": True}})
+            self.assertEqual(_read_line(client), {"ok": True, "authorized": True})
+            for line in (b'{"id":"p2","command":"official_prepare"}\n',
+                         b'{"id":"p3","command":"official_prepare","email":"a@b.c","deadline":1}\n',
+                         b'{"id":"f2","command":"official_finish","email":"a@b.c"}\n'):
+                with self.subTest(line=line):
+                    client.sendall(line)
+                    self.assertEqual(_read_line(client), {"ok": False, "error": "invalid_request"})
+        readable, _, _ = select.select([host.proc.stdout], [], [], 0.1)
+        self.assertEqual(readable, [])
+
     def test_switch_without_time_to_restore_is_refused_without_forwarding(self):
         host = self.start_host()
         deadline = (time.time() + native_transport.BROWSER_ROLLBACK_GRACE - 5) * 1000

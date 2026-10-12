@@ -441,3 +441,153 @@ class StampTests(unittest.TestCase):
                                              deadline=browser_profiles.deadlines.Deadline(300), selected_at=123.0)
         self.assertTrue(result["ok"])
         self.assertEqual(sorted(stamp for _, stamp in sent), [123.0, 123.0])
+
+
+class OfficialSender:
+    """Answers status, official_prepare and official_finish like connected companions."""
+
+    def __init__(self, states, prepared, finished=None):
+        self.states = {Path(path): dict(state) for path, state in states.items()}
+        self.prepared = {Path(path): dict(result) for path, result in prepared.items()}
+        self.finished = {Path(path): dict(result) for path, result in (finished or {}).items()}
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def __call__(self, path, command, email, timeout=None, deadline=None, selected_at=None):
+        path = Path(path)
+        with self.lock:
+            self.calls.append((path, command, email, timeout))
+        assert deadline is None and selected_at is None and timeout is not None
+        if command == "status":
+            return dict(self.states[path])
+        if command == "official_prepare":
+            return dict(self.prepared.get(path, {"ok": True, "state": "not_installed"}))
+        if command == "official_finish":
+            return dict(self.finished.get(path, {"ok": True, "authorized": False, "consent": "none"}))
+        raise AssertionError(command)
+
+    def commands(self, name):
+        return [call for call in self.calls if call[1] == name]
+
+
+class FollowOfficialTests(unittest.TestCase):
+    def setUp(self):
+        self.base = Path("/unused/bridge")
+        self.one = self.base / "browsers" / "1.sock"
+        self.two = self.base / "browsers" / "2.sock"
+        self.clock = FakeClock()
+        self.presses = []
+
+    def press(self, result):
+        def run(timeout, windows):
+            self.presses.append((timeout, windows))
+            return dict(result)
+        return run
+
+    def follow(self, paths, sender, press=None, seconds=300):
+        with mock.patch.object(browser_profiles.profile_transport, "connection_paths", return_value=paths), \
+                mock.patch.object(browser_profiles.event_log, "emit"):
+            return browser_profiles.follow_official(self.base, TARGET, self.clock.deadline(seconds),
+                                                    sender=sender, press=press or self.press({"ok": True}))
+
+    def test_opened_profiles_are_pressed_then_always_finished(self):
+        sender = OfficialSender(
+            {self.one: {"ok": True, "email": TARGET}, self.two: {"ok": True, "email": TARGET.upper()}},
+            {self.one: {"ok": True, "state": "opened", "windowId": 7},
+             self.two: {"ok": True, "state": "opened", "windowId": 9}},
+            {self.one: {"ok": True, "authorized": True, "consent": "clicked"},
+             self.two: {"ok": True, "authorized": True, "consent": "skipped"}})
+
+        result = self.follow([self.one, self.two], sender,
+                             self.press({"ok": True, "windows": 2, "pressed": 2, "signedIn": 2}))
+
+        self.assertTrue(result["ok"])
+        self.assertIs(result["extensionReady"], True)
+        self.assertNotIn("extensionError", result)
+        self.assertEqual(result["pressed"], 2)
+        self.assertEqual(self.presses, [(60, 2)])
+        self.assertEqual([call[2] for call in sender.commands("official_prepare")], [TARGET, TARGET])
+        self.assertTrue(all(call[3] <= 20 for call in sender.commands("official_prepare")))
+        self.assertEqual(len(sender.commands("official_finish")), 2)
+        self.assertEqual(result["profiles"][0],
+                         {"connection": "1.sock", "state": "opened", "authorized": True, "consent": "clicked"})
+
+    def test_profiles_on_another_account_are_left_alone(self):
+        sender = OfficialSender({self.one: {"ok": True, "email": OLD_ONE}}, {})
+
+        result = self.follow([self.one], sender)
+
+        self.assertEqual(result, {"ok": True, "extensionReady": None, "extension": "no_profiles"})
+        self.assertEqual(sender.commands("official_prepare"), [])
+        self.assertEqual(self.presses, [])
+
+    def test_nothing_to_do_without_the_official_extension(self):
+        sender = OfficialSender({self.one: {"ok": True, "email": TARGET}},
+                                {self.one: {"ok": True, "state": "not_installed"}})
+
+        result = self.follow([self.one], sender)
+
+        self.assertIsNone(result["extensionReady"])
+        self.assertEqual(result["extension"], "not_installed")
+        self.assertEqual(self.presses, [])
+        self.assertEqual(sender.commands("official_finish"), [])
+
+    def test_a_failed_press_still_finishes_and_reports_why(self):
+        sender = OfficialSender({self.one: {"ok": True, "email": TARGET}},
+                                {self.one: {"ok": True, "state": "opened"}})
+
+        result = self.follow([self.one], sender, self.press({"ok": False, "error": "accessibility_needed"}))
+
+        self.assertIs(result["extensionReady"], False)
+        self.assertEqual(result["extensionError"], "accessibility_needed")
+        self.assertEqual(len(sender.commands("official_finish")), 1)
+
+    def test_consent_seen_by_every_profile_counts_without_the_helper(self):
+        sender = OfficialSender({self.one: {"ok": True, "email": TARGET}},
+                                {self.one: {"ok": True, "state": "opened"}},
+                                {self.one: {"ok": True, "authorized": True, "consent": "clicked"}})
+
+        result = self.follow([self.one], sender, self.press({"ok": False, "error": "timeout"}))
+
+        self.assertIs(result["extensionReady"], True)
+
+    def test_refused_consent_is_reported(self):
+        sender = OfficialSender({self.one: {"ok": True, "email": TARGET}},
+                                {self.one: {"ok": True, "state": "opened"}},
+                                {self.one: {"ok": True, "authorized": False, "consent": "refused"}})
+
+        result = self.follow([self.one], sender, self.press({"ok": False, "error": "timeout"}))
+
+        self.assertEqual(result["extensionError"], "consent_refused")
+
+    def test_the_helper_never_eats_the_time_needed_to_finish(self):
+        sender = OfficialSender({self.one: {"ok": True, "email": TARGET}},
+                                {self.one: {"ok": True, "state": "opened"}})
+
+        self.follow([self.one], sender, self.press({"ok": True}), seconds=40)
+
+        self.assertEqual(len(self.presses), 1)
+        self.assertLessEqual(self.presses[0][0], 40 - 15)
+
+
+class PressLoginTests(unittest.TestCase):
+    def test_missing_helper_is_reported(self):
+        with mock.patch.dict(browser_profiles.os.environ, {"CLAUDE_SWITCHER_EXECUTABLE": "/nonexistent"}), \
+                mock.patch.object(browser_profiles, "APP_EXECUTABLE", "/nonexistent/app"):
+            self.assertEqual(browser_profiles.press_login(5, 1), {"ok": False, "error": "helper_missing"})
+
+    def test_helper_arguments_and_reply(self):
+        import os
+        import stat
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "claude-switcher"
+            script.write_text('#!/bin/sh\necho "$@" >&2\necho \'{"ok":true,"windows":1,"pressed":1,"signedIn":1}\'\n')
+            script.chmod(script.stat().st_mode | stat.S_IXUSR)
+            with mock.patch.dict(os.environ, {"CLAUDE_SWITCHER_EXECUTABLE": str(script)}), \
+                    mock.patch.object(browser_profiles.subprocess, "run",
+                                      wraps=browser_profiles.subprocess.run) as run:
+                result = browser_profiles.press_login(12.7, 2)
+            self.assertEqual(result, {"ok": True, "windows": 1, "pressed": 1, "signedIn": 1})
+            self.assertEqual(run.call_args.args[0],
+                             [str(script), "--chrome-extension-login", "--timeout", "12", "--windows", "2"])
