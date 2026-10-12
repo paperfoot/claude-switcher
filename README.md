@@ -161,6 +161,7 @@ claude-accounts accounts                  # saved Claude accounts and usage stat
 claude-accounts chrome-status             # verified account in each connected Chrome profile
 claude-accounts chrome work@example.com --expect-profiles 2
 claude-accounts claude work@example.com   # Chrome and Claude Code together
+claude-accounts extension work@example.com  # re-sign Chrome's official Claude extension only
 claude-accounts refresh-code              # sync a stale Code credential file after `cswap add`
 claude-accounts logs                      # the latest 50 switch events
 ```
@@ -189,7 +190,9 @@ APP="/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher"
 - **Files:** settings and the usage cache live in `~/.config/claude-switcher/` with private permissions. claude-swap keeps its own account store in `~/.claude-swap-backup/`.
 - **Logs:** the switch log stores results, timings, the failing step and HTTP status. It never stores tokens, cookies, account emails or URLs. Command output such as `--accounts` includes account emails and usage, but no tokens or cookies.
 
-The official Claude Chrome extension and Claude Desktop keep their own sign-ins and are not switched. See [why the official extension is separate](docs/chrome-extension-switching.md). Claude's cookie and credential formats are not public interfaces, so a Claude update can require maintenance here.
+- **Claude in Chrome (the official extension agents use for browser control):** after Chrome switches, the companion turns the official extension off and on again. That clears only its session; its shortcuts and scheduled tasks stay. If it already belongs to the selected account it reconnects by itself. Otherwise the switcher presses its **Log in** button and approves Anthropic's own consent page, but only for the official extension and only when the page shows the selected email. Claude Code's browser tools then reach Chrome on the new account. Pressing **Log in** needs macOS Accessibility for Claude Switcher; macOS asks once.
+
+Claude Desktop keeps its own sign-in and is not switched. See [how the official extension follows a switch](docs/chrome-extension-switching.md). Claude's cookie, credential and extension formats are not public interfaces, so a Claude update can require maintenance here.
 
 ## Claude Desktop extras
 
@@ -204,6 +207,7 @@ Desktop sign-ins are separate from Chrome and Claude Code. Switching a Claude ac
 ## Troubleshooting
 
 - **Chrome does not respond, or a Chrome switch fails.** Open `chrome://extensions` in that profile, click **Reload** on Claude Switcher Companion and try once more. A failed restore does not by itself mean the login expired.
+- **“Claude extension needs attention”, or agents report no connected browser.** Allow Claude Switcher in System Settings → Privacy & Security → Accessibility, then run `claude-accounts claude <email>` again or select the account in the palette. To repair only the extension, run `claude-accounts extension <email>`.
 - **Code switched but Chrome did not.** The verified Code selection stays. Fix Chrome, then select the account again. In JSON output, `ok: true` with `browserReady: false` means the same thing.
 - **“Sign in needed”.** The saved login expired or was revoked. For Chrome, sign in again through the companion's **Add another account**. For Codex, type `reconnect codex` and the account in the palette.
 - **Claude Code still uses the old account.** Wait about 30 seconds for its Keychain cache. After a manual `cswap add`, run `claude-accounts refresh-code`.
