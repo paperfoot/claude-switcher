@@ -409,7 +409,7 @@ struct PaletteJevAndLimitTests {
         let list = rows("make personal the default for chrome", Fixture.context(jev: true))
         let last = list.last
         #expect(last?.action == .askJev("make personal the default for chrome"))
-        #expect(last?.title == "Ask Jev: \u{201C}make personal the default for chrome\u{201D}")
+        #expect(last?.title == "Ask: \u{201C}make personal the default for chrome\u{201D}")
         #expect(last?.symbol == "sparkles")
         #expect(rows("what is the weather", Fixture.context(jev: true)).map(\.action) == [.askJev("what is the weather")])
     }

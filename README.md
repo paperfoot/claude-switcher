@@ -99,15 +99,15 @@ The menu bar icon spins during a switch and shows a green check when it is done.
 
 ## Ask in plain words (optional)
 
-Free-form requests such as “use the account with the most weekly quota for Claude” can be interpreted by [TypeSafe](https://typesafe.ai)'s Jev model if you store a TypeSafe API key. Jev is off by default. Local matching handles normal input offline.
+Free-form requests such as “use the account with the most weekly quota for Claude” can be interpreted by [TypeSafe](https://typesafe.ai) if you store a TypeSafe API key. This is off by default. Local matching handles normal input offline.
 
 ```sh
 printf %s "$TYPESAFE_API_KEY" | "/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher" --set-typesafe-key
 ```
 
-Remove the key with `--remove-typesafe-key`. The key lives in your login Keychain as **Claude Switcher TypeSafe**. When the palette cannot place what you typed, it offers **Ask Jev**; a confident, harmless answer runs straight away, and anything else waits for **↩**.
+Remove the key with `--remove-typesafe-key`. The key lives in your login Keychain. When the palette cannot place what you typed, it offers **Ask**; a confident, harmless answer runs straight away, and anything else waits for **↩**.
 
-**Privacy:** a request goes to Jev only when you choose **Ask Jev**. The app then sends the typed request and the account emails and usage needed to choose an action. Nothing is sent to TypeSafe otherwise.
+**Privacy:** a request goes to TypeSafe only when you choose **Ask**. The app then sends the typed request and the account emails and usage needed to choose an action. Nothing is sent to TypeSafe otherwise.
 
 ## Reading the gauges
 

@@ -266,11 +266,11 @@ public enum JevError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .noKey: return "The TypeSafe key could not be read · allow Keychain access and try again"
-        case .timedOut: return "Jev did not answer in time"
+        case .timedOut: return "No answer in time · try again"
         case .rejected(let status) where status == 401 || status == 403: return "TypeSafe refused the API key"
         case .rejected(let status) where status == 429 || status == 529: return "TypeSafe is busy · try again"
         case .rejected: return "TypeSafe could not answer"
-        case .unreadable: return "Jev's answer could not be read"
+        case .unreadable: return "The answer could not be read"
         }
     }
 }

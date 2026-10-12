@@ -1,7 +1,7 @@
 import AppKit
 import ClaudeSwitcherCore
 
-/// One line of the palette: something to perform, or a note such as "Asking Jev…".
+/// One line of the palette: something to perform, or a note such as "Thinking…".
 enum PaletteRow: Equatable {
     case suggestion(PaletteSuggestion)
     case note(String, symbol: String, busy: Bool = false)
@@ -25,7 +25,7 @@ final class CommandPaletteController: NSObject, NSTextFieldDelegate {
     /// something or quits the app.
     static let automaticProbability = 0.85
     static let noMatchHint = "No match \u{00B7} try an email, \u{2018}add\u{2019}, \u{2018}codex\u{2019}, \u{2018}best\u{2019}, or \u{2018}diagnostics\u{2019}"
-    static let jevFailure = "Jev could not help \u{00B7} try different words"
+    static let jevFailure = "Could not place that \u{00B7} try different words"
 
     /// Replace when a TypeSafe key is added or removed while the app runs.
     var router: JevRouter?
@@ -203,7 +203,7 @@ final class CommandPaletteController: NSObject, NSTextFieldDelegate {
         }
         cancelJev()
         isAsking = true
-        setRows([.note("Asking Jev\u{2026}", symbol: "sparkles", busy: true)], selecting: nil)
+        setRows([.note("Thinking\u{2026}", symbol: "sparkles", busy: true)], selecting: nil)
         let context = self.context
         let candidates = PaletteEngine.allCandidates(context: context, query: text)
         jevTask = Task { [weak self] in
@@ -241,7 +241,7 @@ final class CommandPaletteController: NSObject, NSTextFieldDelegate {
     }
 
     private static func labelled(_ suggestion: PaletteSuggestion) -> PaletteSuggestion {
-        let likelihood = "Jev \(Int((suggestion.score * 100).rounded()))%"
+        let likelihood = "\(Int((suggestion.score * 100).rounded()))% likely"
         return PaletteSuggestion(id: suggestion.id, action: suggestion.action, title: suggestion.title,
                                  subtitle: [suggestion.subtitle, likelihood].compactMap { $0 }.joined(separator: " \u{00B7} "),
                                  symbol: suggestion.symbol, isDestructive: suggestion.isDestructive, score: suggestion.score)

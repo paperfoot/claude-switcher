@@ -19,7 +19,7 @@ USAGE
   claude-switcher --history-plan  Preview a local Desktop history transfer.
   claude-switcher --history-enable  Enable sharing after Desktop account changes.
   claude-switcher --login-item on|off|status  Set or check launch at login.
-  claude-switcher --set-typesafe-key  Store a TypeSafe API key from stdin for Jev requests.
+  claude-switcher --set-typesafe-key  Store a TypeSafe API key from stdin for free-form palette requests.
   claude-switcher --remove-typesafe-key  Remove the stored TypeSafe key.
   claude-switcher --dry-run   Print Desktop launch plans without launching anything.
   claude-switcher --help      Show this message.
@@ -200,7 +200,7 @@ if commandLineArguments.contains("--set-typesafe-key") {
     let key = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
         .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !key.isEmpty else { print("Pipe the TypeSafe API key on standard input."); exit(2) }
-    do { try JevKeyStore.save(key); print("TypeSafe key saved. Open the palette again to use Jev."); exit(0) }
+    do { try JevKeyStore.save(key); print("TypeSafe key saved. Free-form requests in the palette now work."); exit(0) }
     catch { print("The key could not be saved in the Keychain."); exit(1) }
 }
 

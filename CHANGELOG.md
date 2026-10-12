@@ -5,6 +5,7 @@ User-visible changes, newest first. From 0.6.1 on, version numbers belong to thi
 ## Unreleased
 
 - When a switch reaches Code but Chrome's saved login for that account was signed out on claude.ai, the menu now says the Chrome login expired and to sign in once, instead of a vague "Chrome could not switch". Any other Chrome failure says Chrome kept the previous account. Companion 0.9.2.
+- The palette no longer shows the name of the model behind free-form requests: the row reads **Ask**, and its answers show only how likely each one is.
 
 ## 1.1.1 — No setup chores after updates
 
@@ -20,7 +21,7 @@ User-visible changes, newest first. From 0.6.1 on, version numbers belong to thi
 
 ## 1.0.1 — No more Keychain prompts after updates
 
-- Codex logins and the Jev key are stored through Apple's `security` tool, like claude-swap's own items. A locally built app no longer asks for the login password after every rebuild. Logins saved by 1.0.0 move over the first time each is read, which can ask one last time.
+- Codex logins and the TypeSafe key are stored through Apple's `security` tool, like claude-swap's own items. A locally built app no longer asks for the login password after every rebuild. Logins saved by 1.0.0 move over the first time each is read, which can ask one last time.
 
 ## 1.0.0 — Command palette
 
@@ -34,7 +35,7 @@ User-visible changes, newest first. From 0.6.1 on, version numbers belong to thi
 - Adding an account in coordinated mode saves it for switching right after sign-in; before, selecting it failed until the setup script ran again.
 - Switches carry one deadline through every layer and restore what changed before the caller gives up; a Chrome profile's host keeps answering during a popup switch.
 - Removed the unused prototype that patched Anthropic's Chrome extension.
-- Optional: with a TypeSafe API key stored, free-form requests can be interpreted by TypeSafe's Jev model. Off by default.
+- Optional: with a TypeSafe API key stored, free-form requests can be interpreted by TypeSafe. Off by default.
 
 ## 0.9.7 — Fresh Code credentials (2026-10-10)
 

@@ -1140,8 +1140,8 @@ enum PaletteRows {
     }
 
     static func askJev(_ text: String) -> PaletteSuggestion {
-        PaletteSuggestion(id: "askJev", action: .askJev(text), title: "Ask Jev: \u{201C}\(text)\u{201D}",
-                          subtitle: "TypeSafe picks the closest action", symbol: "sparkles", score: 0)
+        PaletteSuggestion(id: "askJev", action: .askJev(text), title: "Ask: \u{201C}\(text)\u{201D}",
+                          subtitle: "Find the closest action", symbol: "sparkles", score: 0)
     }
 
     private static func name(_ account: PaletteAccount) -> String {
