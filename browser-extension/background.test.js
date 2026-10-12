@@ -99,7 +99,9 @@ async function makeHarness({
   storage = {selection: {appliedAt: 0, identity: null}},
   deferSelect = false,
   official = null,
+  diskVersion = undefined,
 } = {}) {
+  const reloads = [];
   let jar = clone(initialCookies);
   const alarmListeners = [];
   const vault = new Map(entries.map(entry => [entry.email, clone(entry)]));
@@ -228,6 +230,8 @@ async function makeHarness({
       lastError: null,
       connectNative() { return port; },
       getManifest() { return {version: '0.7.1'}; },
+      ...(diskVersion === undefined ? {} : {getURL: path => `chrome-extension://background-test-extension/${path}`}),
+      reload() { reloads.push(Date.now()); },
       onInstalled: {addListener() {}},
       onMessage: {addListener(listener) { runtimeMessageListeners.push(listener); }},
       onStartup: {addListener() {}},
@@ -251,7 +255,8 @@ async function makeHarness({
     },
   };
 
-  const fetch = async () => {
+  const fetch = async url => {
+    if (String(url).endsWith('/manifest.json')) return {ok: true, async json() { return {version: diskVersion}; }};
     const key = jar.find(cookie => cookie.name === 'sessionKey')?.value;
     const email = EMAIL[key] ?? null;
     return {
@@ -292,6 +297,7 @@ async function makeHarness({
     },
     jar: () => clone(jar),
     officialCalls,
+    reloads,
     official: () => official,
     async tabUpdated(tabId, change, tab) {
       for (const listener of tabListeners) listener(tabId, change, tab);
@@ -706,4 +712,26 @@ test('official prepare cycles the extension, opens its options and authorizes on
   const finish = await harness.sendMenu({id: 'o6', command: 'official_finish'});
   assert.deepEqual(clone(finish.result), {ok: true, authorized: true, consent: 'clicked'});
   assert.deepEqual(harness.officialCalls.at(-1), ['removeWindow', 77]);
+});
+
+test('the companion reloads itself once when the app installed a newer version', async () => {
+  const storage = {selection: {appliedAt: 0, identity: null}};
+  const harness = await makeHarness({diskVersion: '0.9.1', storage});
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  await harness.alarm();
+  assert.equal(harness.reloads.length, 1);
+  assert.equal(typeof storage.updateReloadAt, 'number');
+  // A reload that did not take is not retried every minute.
+  await harness.alarm();
+  assert.equal(harness.reloads.length, 1);
+});
+
+test('the companion does not reload when the files on disk match the running version', async () => {
+  const harness = await makeHarness({diskVersion: '0.7.1'});
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  await harness.alarm();
+  assert.equal(harness.reloads.length, 0);
+  assert.ok(harness.requested('ping').length >= 1);
 });
