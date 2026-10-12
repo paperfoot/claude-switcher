@@ -275,3 +275,17 @@ Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau
 ## License
 
 [MIT](LICENSE). Not affiliated with Anthropic or OpenAI.
+
+---
+
+<div align="center">
+
+**If Claude Switcher saves you a re-login, give it a ⭐ — it helps other people with more than one subscription find it.**
+
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/claude-switcher?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/claude-switcher/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+Built by [Boris Djordjevic](https://x.com/longevityboris) at [Paperfoot](https://github.com/paperfoot)
+
+</div>
