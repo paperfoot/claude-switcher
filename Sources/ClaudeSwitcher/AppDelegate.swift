@@ -537,8 +537,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             isSwitchingAccount = false
             switchMessage = result?.summary ?? "Could not switch accounts · try again"
             selectedEmailOverride = result?.codeEmail
+            requestAccessibilityIfNeeded(extensionError: result?.extensionError)
             // Code switched but a Chrome profile did not: amber, not red.
-            statusFeedback?.finish(ok: result?.codeSwitched == true, browserReady: result?.browserReady == true,
+            statusFeedback?.finish(ok: result?.codeSwitched == true,
+                                   browserReady: result?.browserReady == true && result?.extensionReady != false,
                                    email: email, message: switchMessage ?? "Switch failed") { [weak self = self] in
                 guard let self, self.coordinatedGeneration == generation else { return }
                 self.switchMessage = nil
@@ -547,6 +549,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refreshCoordinatedAccounts(setup: setup, force: true)
             rebuildIfVisible()
         }
+    }
+
+    private var askedForAccessibility = false
+
+    /// The switch helper signs Chrome's Claude extension in through Accessibility. When
+    /// macOS has not allowed that, show its own prompt once per launch, never on a timer.
+    private func requestAccessibilityIfNeeded(extensionError: String?) {
+        guard extensionError == "accessibility_needed", !askedForAccessibility else { return }
+        askedForAccessibility = true
+        // kAXTrustedCheckOptionPrompt's value; the global itself is not concurrency-safe.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 
     @objc private func setupSwitching(_ sender: Any?) {
@@ -1577,6 +1591,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             guard result.switched == true else { return }
+            requestAccessibilityIfNeeded(extensionError: result.extensionError)
             guard result.ok, let email = result.codeEmail else {
                 // Code moved but the switch could not finish (unknown account, Chrome trouble).
                 coordinatedGeneration += 1
@@ -1590,10 +1605,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             coordinatedGeneration += 1
             selectedEmailOverride = email
             let browserReady = result.browserReady == true
+            let extensionReady = result.extensionReady != false
             // Kept until the next switch: an automatic change must never be silent.
             switchMessage = "Switched automatically to \(email) at \(MenuBuilder.clock(Date(), now: Date()))"
-                + (browserReady ? "" : " · Chrome needs attention")
-            statusFeedback?.finish(ok: true, browserReady: browserReady, email: email,
+                + (!browserReady ? " · Chrome needs attention"
+                   : extensionReady ? ""
+                   : result.extensionError == "accessibility_needed" ? " · allow Accessibility for the Claude extension"
+                   : " · Claude extension needs attention")
+            statusFeedback?.finish(ok: true, browserReady: browserReady && extensionReady, email: email,
                                    message: switchMessage ?? "") {}
             refreshCoordinatedAccounts(setup: setup, force: true)
             rebuildIfVisible()

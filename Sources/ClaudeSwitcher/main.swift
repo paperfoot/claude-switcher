@@ -10,6 +10,8 @@ USAGE
   claude-switcher --accounts  Print verified Claude Code account summaries as JSON.
   claude-switcher --switch EMAIL  Select an account for Chrome and ordinary Claude Code.
   claude-switcher --switch-status Print coordinated account state as JSON.
+  claude-switcher --chrome-extension-login [--timeout S] [--windows N]
+                              Sign Chrome's Claude extension in on its open options pages.
   claude-switcher --usage     Fetch verified usage percentages and reset times as JSON.
   claude-switcher --codex-accounts Print saved Codex account status and usage.
   claude-switcher --codex-connect EMAIL  Save a Codex login through the browser.
@@ -145,6 +147,11 @@ private func runDryRun() -> Int32 {
 }
 
 let commandLineArguments = CommandLine.arguments.dropFirst()
+
+// Run by the switch helper after Chrome changes account; no UI is started.
+if commandLineArguments.contains("--chrome-extension-login") {
+    exit(ChromeExtensionLoginRunner.run(arguments: commandLineArguments))
+}
 
 if let index = commandLineArguments.firstIndex(of: "--login-item") {
     do {
