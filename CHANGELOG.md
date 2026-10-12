@@ -2,12 +2,17 @@
 
 User-visible changes, newest first. From 0.6.1 on, version numbers belong to this fork. Upstream releases with the same numbers are different software.
 
+## 1.1.1 — No setup chores after updates
+
+- The Chrome companion reloads itself within a minute of an update; clicking **Reload** in `chrome://extensions` is no longer needed. Companion 0.9.1 is the last version that needs that click once.
+- Claude Switcher asks for Accessibility once at launch instead of during the first switch.
+
 ## 1.1.0 — Claude in Chrome follows every switch
 
 - After a Claude switch, Anthropic's Claude extension in each connected Chrome profile signs in to the same account, so Claude Code's browser tools keep working. Before, the extension stayed on the old account, or signed itself out after Chrome restarted, and agents saw no browser.
 - The switcher turns the extension off and on, presses its **Log in** and approves Anthropic's consent page only for the selected email. It never uses the extension's **Log out**, which erases its shortcuts and scheduled tasks.
 - Pressing **Log in** needs Accessibility for Claude Switcher; macOS asks once. `claude-accounts extension EMAIL` repeats just this step.
-- Companion 0.9.0 adds the `management` and `scripting` permissions for this. Click **Reload** on Claude Switcher Companion in `chrome://extensions` after updating.
+- Companion 0.9.0 adds the `management` and `scripting` permissions for this.
 
 ## 1.0.1 — No more Keychain prompts after updates
 
