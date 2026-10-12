@@ -76,13 +76,23 @@ public struct CoordinatedResult: Decodable, Sendable {
     public let error: String?
     public let message: String?
     public let browserError: String?
+    /// Whether Chrome's official Claude extension now uses the selected account too;
+    /// nil when that step did not run.
+    public let extensionReady: Bool?
+    public let extensionError: String?
 
     /// Code now uses the selected account. True for a full success and for a partial
     /// result where only Chrome failed, which deserves amber rather than red.
     public var codeSwitched: Bool { ok || (partial == true && codeEmail != nil) }
 
     public var summary: String {
-        if ok { return browserReady == true ? "Chrome and Code switched" : "Code switched · Chrome needs setup" }
+        if ok {
+            guard browserReady == true else { return "Code switched · Chrome needs setup" }
+            guard extensionReady == false else { return "Chrome and Code switched" }
+            return extensionError == "accessibility_needed"
+                ? "Switched · allow Accessibility so Chrome's Claude extension follows"
+                : "Chrome and Code switched · Claude extension needs attention"
+        }
         switch error {
         case "web_login_needed", "web_login_expired": return "Save this account in the Chrome companion first"
         case "web_switch_failed": return "Chrome could not switch · previous account restored"
@@ -118,6 +128,8 @@ public struct AutoSwitchResult: Decodable, Sendable {
     public let trigger: String?
     public let browserReady: Bool?
     public let browserError: String?
+    public let extensionReady: Bool?
+    public let extensionError: String?
 }
 
 /// A coordinator run that produced no usable result. `description` may end with the
@@ -184,7 +196,10 @@ public enum CoordinatedSwitching {
         process.standardOutput = output
         process.standardError = errors
         process.standardInput = FileHandle.nullDevice
-        process.environment = LaunchPlanning.terminalEnvironment(for: Profile(id: "global", label: "Global"), inheriting: ProcessInfo.processInfo.environment)
+        var environment = LaunchPlanning.terminalEnvironment(for: Profile(id: "global", label: "Global"), inheriting: ProcessInfo.processInfo.environment)
+        // The helper runs this binary to sign Chrome's Claude extension in after a switch.
+        if let executable = Bundle.main.executablePath { environment["CLAUDE_SWITCHER_EXECUTABLE"] = executable }
+        process.environment = environment
         let done = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in done.signal() }
         try process.run()
@@ -209,5 +224,50 @@ public enum CoordinatedSwitching {
         try? handle.seek(toOffset: end > UInt64(limit) ? end - UInt64(limit) : 0)
         let data = (try? handle.readToEnd()) ?? Data()
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Decisions for signing Chrome's official Claude extension in through its options
+/// page. The Accessibility calls live in the app; this only reads labels and counts.
+public enum ChromeExtensionLogin {
+    public static let windowTitlePrefix = "Claude Options"
+
+    public enum Control: Equatable, Sendable { case logIn, logOut }
+
+    /// The control a button label names, ignoring case and surrounding space.
+    public static func control(forLabel label: String) -> Control? {
+        switch label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "log in": return .logIn
+        case "log out": return .logOut
+        default: return nil
+        }
+    }
+
+    public static func isCandidate(windowTitle: String) -> Bool {
+        windowTitle.hasPrefix(windowTitlePrefix)
+    }
+
+    public struct Progress: Equatable, Sendable {
+        public var windows: Int
+        public var pressed: Int
+        public var signedIn: Int
+        public init(windows: Int = 0, pressed: Int = 0, signedIn: Int = 0) {
+            self.windows = windows; self.pressed = pressed; self.signedIn = signedIn
+        }
+
+        /// Every expected options window is open and shows the signed-in view.
+        public func isDone(expectedWindows: Int) -> Bool {
+            windows >= max(1, expectedWindows) && signedIn == windows
+        }
+
+        /// The JSON the helper prints; `timedOut` only matters when not done.
+        public func result(expectedWindows: Int, timedOut: Bool) -> [String: Any] {
+            var output: [String: Any] = ["ok": isDone(expectedWindows: expectedWindows),
+                                         "windows": windows, "pressed": pressed, "signedIn": signedIn]
+            if !isDone(expectedWindows: expectedWindows) {
+                output["error"] = windows == 0 ? "no_window" : (timedOut ? "timeout" : "incomplete")
+            }
+            return output
+        }
     }
 }
