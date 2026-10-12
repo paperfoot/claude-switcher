@@ -2,6 +2,10 @@
 
 User-visible changes, newest first. From 0.6.1 on, version numbers belong to this fork. Upstream releases with the same numbers are different software.
 
+## Unreleased
+
+- When a switch reaches Code but Chrome's saved login for that account was signed out on claude.ai, the menu now says the Chrome login expired and to sign in once, instead of a vague "Chrome could not switch". Any other Chrome failure says Chrome kept the previous account. Companion 0.9.2.
+
 ## 1.1.1 — No setup chores after updates
 
 - The Chrome companion reloads itself within a minute of an update; clicking **Reload** in `chrome://extensions` is no longer needed. Companion 0.9.1 is the last version that needs that click once.
