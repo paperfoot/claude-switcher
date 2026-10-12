@@ -191,8 +191,14 @@ def _validate_client_request(message: object) -> _ClientRequest | None:
     command = message.get("command")
     if not _bounded_string(request_id, MAX_ID_LENGTH):
         return None
-    if command not in ("switch", "status"):
+    if command not in ("switch", "status", "official_prepare", "official_finish"):
         return None
+    if command == "official_prepare":
+        # The official Claude extension follows this profile's verified account.
+        email = message.get("email")
+        if set(message) != {"id", "command", "email"} or not _bounded_string(email, MAX_EMAIL_LENGTH):
+            return None
+        return _ClientRequest(request_id, command, email)
     if command == "switch":
         email = message.get("email")
         if not _bounded_string(email, MAX_EMAIL_LENGTH):
@@ -437,6 +443,8 @@ def run_host(
                                         "command": request.command,
                                     }
                                     reply_within = CLIENT_REQUEST_TIMEOUT
+                                    if request.command == "official_prepare":
+                                        forwarded["email"] = request.email
                                     if request.command == "switch":
                                         if request.deadline is not None:
                                             reply_within = min(
@@ -513,7 +521,7 @@ def send_request(
     deadline: float | None = None,
     selected_at: float | None = None,
 ) -> dict:
-    """Send one switch/status request to a running host and return its result.
+    """Send one request to a running host and return its result.
 
     `timeout` bounds the whole exchange. A switch may instead carry `deadline`
     (Unix milliseconds): the host replies by then, and this waits a little longer.

@@ -1,8 +1,11 @@
 """Verified account changes across connected Chrome profiles."""
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import math
+import os
 from pathlib import Path
+import subprocess
 
 try:
     from . import native_transport, profile_transport, event_log, deadlines
@@ -177,3 +180,104 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None, deadline
                 'rolledBack': restored, 'failedConnection': path.name,
                 **{key: result[key] for key in ('failureStep', 'cookieName', 'probeStatus', 'httpStatus') if key in result}}
     return _summary(final)
+
+
+APP_EXECUTABLE = '/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher'
+
+
+def _helper_executable():
+    configured = os.environ.get('CLAUDE_SWITCHER_EXECUTABLE')
+    if configured and os.path.isfile(configured) and os.access(configured, os.X_OK):
+        return configured
+    return APP_EXECUTABLE
+
+
+def press_login(timeout, windows):
+    """Ask the menu app to press Log in in the official extension's options windows.
+
+    It runs as a child of whoever runs this helper, so macOS checks Accessibility for
+    the menu app, or for the terminal when an agent switches from the command line.
+    """
+    executable = _helper_executable()
+    if not (os.path.isfile(executable) and os.access(executable, os.X_OK)):
+        return {'ok': False, 'error': 'helper_missing'}
+    seconds = max(1, int(timeout))
+    try:
+        completed = subprocess.run(
+            [executable, '--chrome-extension-login', '--timeout', str(seconds), '--windows', str(windows)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=seconds + 5)
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'error': 'helper_timeout'}
+    except OSError:
+        return {'ok': False, 'error': 'helper_missing'}
+    try:
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return {'ok': False, 'error': 'helper_failed'}
+    return result if isinstance(result, dict) else {'ok': False, 'error': 'helper_failed'}
+
+
+def _official(path, command, email, deadline, sender, cap):
+    try:
+        timeout = deadline.timeout(cap)
+    except deadlines.DeadlineExceeded:
+        return {'ok': False, 'error': 'browser_timeout'}
+    return _send(path, command, email, sender, timeout=timeout)
+
+
+def follow_official(base, email, deadline, sender=None, press=None):
+    """Sign the official Claude extension in each profile in to `email`, best effort.
+
+    Each companion restarts the official extension, which keeps a login only for the
+    account Claude.ai now uses, and opens its options page when it needs signing in.
+    The menu app presses Log in there; the companion approves the consent page for
+    this account. Never changes Claude.ai or Code, so it never needs a rollback.
+    `extensionReady` is None when no profile had anything to do.
+    """
+    press = press or press_login
+    rows = [(path, state) for path, state in _connections(base, deadline, sender=sender)
+            if state.get('ok') and str(state.get('email') or '').lower() == email.lower()]
+    if not rows:
+        return {'ok': True, 'extensionReady': None, 'extension': 'no_profiles'}
+    prepared = [(path, _official(path, 'official_prepare', email, deadline, sender,
+                                 deadlines.OFFICIAL_PREPARE_TIMEOUT)) for path, _ in rows]
+    opened = [path for path, result in prepared if result.get('ok') and result.get('state') == 'opened']
+    profiles = {path: {'connection': path.name, 'state': result.get('state') or result.get('error', 'failed')}
+                for path, result in prepared}
+    if not opened:
+        states = {result.get('state') for _, result in prepared if result.get('ok')}
+        failed = [result.get('error', 'failed') for _, result in prepared if not result.get('ok')]
+        result = {'ok': True, 'extensionReady': None if not failed else False,
+                  'extension': 'not_installed' if states == {'not_installed'} else
+                               'disabled' if 'disabled' in states else 'no_profiles',
+                  'profiles': list(profiles.values())}
+        if failed:
+            result['extensionError'] = failed[0]
+        event_log.emit(base, 'official_extension_finished', extensionReady=result['extensionReady'],
+                       extension=result['extension'], profileCount=len(rows))
+        return result
+    budget = min(deadlines.OFFICIAL_HELPER_TIMEOUT, deadline.remaining(deadlines.OFFICIAL_FINISH_TIMEOUT + 5))
+    pressed = press(budget, len(opened)) if budget >= 5 else {'ok': False, 'error': 'timeout'}
+    if not isinstance(pressed, dict):
+        pressed = {'ok': False, 'error': 'helper_failed'}
+    finished = []
+    for path in opened:
+        # Always close the windows and stop approving consent, even after a failure.
+        timeout = max(1.0, min(deadlines.OFFICIAL_FINISH_TIMEOUT, deadline.remaining()))
+        done = _send(path, 'official_finish', None, sender, timeout=timeout)
+        finished.append(done)
+        profiles[path].update(authorized=bool(done.get('authorized')), consent=done.get('consent', 'none'))
+    authorized = all(done.get('ok') and done.get('authorized') for done in finished)
+    ready = bool(pressed.get('ok')) or authorized
+    result = {'ok': True, 'extensionReady': ready, 'extension': 'opened',
+              'profiles': list(profiles.values())}
+    for key in ('pressed', 'signedIn', 'windows'):
+        if isinstance(pressed.get(key), int) and not isinstance(pressed.get(key), bool):
+            result[key] = pressed[key]
+    if not ready:
+        refused = any(done.get('consent') == 'refused' for done in finished)
+        result['extensionError'] = 'consent_refused' if refused else str(pressed.get('error') or 'extension_not_signed_in')
+    event_log.emit(base, 'official_extension_finished', extensionReady=ready, extension='opened',
+                   profileCount=len(rows), opened=len(opened),
+                   **({'error': result['extensionError']} if not ready else {}))
+    return result

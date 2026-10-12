@@ -178,6 +178,30 @@ def browser_state(deadline=None):
         return {'ok': False, 'error': 'browser_missing', 'accounts': []}
 
 
+def follow_extension(email, deadline):
+    """Sign the official Claude extension in to `email` after a verified switch.
+
+    Best effort: the switch has already succeeded and is never undone here. Returns
+    only `extensionReady` (None when no profile had anything to do) and, on failure,
+    `extensionError`.
+    """
+    if deadline.remaining() < deadlines.OFFICIAL_MINIMUM:
+        return {'extensionReady': False, 'extensionError': 'browser_timeout'}
+    try:
+        try:
+            from . import browser_profiles
+        except ImportError:
+            import browser_profiles
+        result = browser_profiles.follow_official(BASE, email, deadline)
+    except Exception:
+        event_log.emit(BASE, 'native_error', error='extension_follow_failed')
+        return {'extensionReady': False, 'extensionError': 'extension_follow_failed'}
+    followed = {'extensionReady': result.get('extensionReady')}
+    if result.get('extensionError'):
+        followed['extensionError'] = result['extensionError']
+    return followed
+
+
 def wait_for_lock(lock, deadline=None, cap=None):
     """Take `lock`, waiting up to `cap` seconds (inside the deadline) for an automatic
     check or another switch to finish. False when it stays busy."""
@@ -206,8 +230,11 @@ def select_browser(email, expected_profiles=1, deadline=None):
             return {'ok': False, 'error': 'switch_in_progress'}
         # A deliberate Chrome-only choice also supersedes older Code selections, so
         # a profile that reconnects later does not switch back to the Code account.
-        return browser_request('switch', email, expected_profiles=expected_profiles,
-                               deadline=deadline, selected_at=time.time())
+        result = browser_request('switch', email, expected_profiles=expected_profiles,
+                                 deadline=deadline, selected_at=time.time())
+        if result.get('ok') and result.get('email') == email and result.get('profileCount'):
+            result.update(follow_extension(email, deadline))
+        return result
 
 
 @logged_switch('claude')
@@ -269,8 +296,24 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
         result = {'ok': True, 'codeEmail': email, 'webEmail': web.get('email') if web.get('ok') else None,
                   'browserReady': bool(web.get('ok')), 'selectedAt': selected_at,
                   'message': 'Chrome and Code switched' if web.get('ok') else 'Code switched · connect Chrome'}
+        # A popup selection skips this: its own profile waits on this reply mid-switch.
+        if include_browser and web.get('ok') and web.get('profileCount') and not verified_browser:
+            result.update(follow_extension(email, deadline))
         atomic_json(STATE, result)
         return result
+
+
+def extension_follow(email):
+    """Repair: sign the official extension in to the account Chrome already uses."""
+    deadline = deadlines.Deadline(deadlines.MENU_BUDGET)
+    email = validate_email(email)
+    BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(BASE / 'switch.lock', 'a') as lock:
+        os.chmod(lock.name, 0o600)
+        if not wait_for_lock(lock, deadline):
+            return {'ok': False, 'error': 'switch_in_progress'}
+        followed = follow_extension(email, deadline)
+    return {'ok': followed.get('extensionReady') is not False, 'email': email, **followed}
 
 
 AUTO_THRESHOLD_RANGE = (50.0, 99.9)
@@ -367,11 +410,13 @@ def auto_tick(threshold, deadline=None, events=None):
         if not ready and web.get('error') != 'browser_missing':
             state.update(ok=False, partial=True, error='code_only_after_web_failure',
                          browserError=web.get('error', 'web_unavailable'))
+        followed = follow_extension(email, deadline) if ready and web.get('profileCount') else {}
+        state.update(followed)
         atomic_json(STATE, state)
         event_log.emit(BASE, 'switch_finished', scope='auto', ok=ready or web.get('error') == 'browser_missing',
                        browserReady=ready, **({'browserError': web.get('error')} if not ready else {}))
         return {'ok': True, **moved, 'codeEmail': email, 'browserReady': ready,
-                'browserError': None if ready else web.get('error', 'web_unavailable')}
+                'browserError': None if ready else web.get('error', 'web_unavailable'), **followed}
 
 
 def snapshot(deadline=None):
@@ -651,6 +696,8 @@ def main():
             if args.expect_profiles < 1: parser.error('--expect-profiles must be at least 1')
             result = select_browser(args.email, expected_profiles=args.expect_profiles,
                                     deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
+        elif command == 'extension-follow':
+            result = extension_follow(sys.argv[2] if len(sys.argv) > 2 else '')
         elif command == 'snapshot':
             result = snapshot(deadlines.Deadline(deadlines.STATUS_BUDGET))
         elif command == 'auto-tick':

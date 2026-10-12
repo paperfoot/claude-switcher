@@ -27,6 +27,12 @@ a rollback, still need), so a switch stops and restores before its caller gives 
       extension stops starting cookie work   host deadline - 40 s (its own rollback)
       native host replies browser_timeout    at the host deadline
       send_request socket wait               host deadline + 2 s
+  Official extension follow step, after a   skipped with under OFFICIAL_MINIMUM 30 s
+  verified switch, best effort               left; never rolls a switch back
+    prepare in one profile                   OFFICIAL_PREPARE_TIMEOUT 20 s
+    menu app presses Log in                  OFFICIAL_HELPER_TIMEOUT 60 s, ending
+                                             OFFICIAL_FINISH_TIMEOUT + 5 s early
+    finish in one profile                    OFFICIAL_FINISH_TIMEOUT 10 s
 """
 from __future__ import annotations
 
@@ -55,6 +61,10 @@ STATUS_TIMEOUT = 10.0
 PROFILE_SWITCH_TIMEOUT = native_transport.CLIENT_REQUEST_TIMEOUT
 PROFILE_SWITCH_MINIMUM = 60.0
 PROFILE_RESTORE_RESERVE = STATUS_TIMEOUT + PROFILE_SWITCH_MINIMUM
+OFFICIAL_MINIMUM = 30.0
+OFFICIAL_PREPARE_TIMEOUT = 20.0
+OFFICIAL_HELPER_TIMEOUT = 60.0
+OFFICIAL_FINISH_TIMEOUT = 10.0
 
 
 class DeadlineExceeded(Exception):
