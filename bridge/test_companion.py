@@ -753,10 +753,102 @@ class CompanionTests(unittest.TestCase):
         with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
             self.assertEqual(self.per_profile_selection(),
                              {"ok": True, "email": TARGET_EMAIL, "selectedAt": 99.0})
-            ready = self.handle_native(
-                {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 99.0})
+            with mock.patch.object(companion, "spawn_extension_follow", autospec=True) as follow:
+                ready = self.handle_native(
+                    {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 99.0})
         self.assertEqual(ready, {"ok": True})
-        self.assert_saved(state)
+        # Chrome caught up, for example after the user signed in: the switch is complete,
+        # and the official Claude extension follows outside this native reply.
+        self.assert_saved({"ok": True, "codeEmail": TARGET_EMAIL, "browserReady": True,
+                           "selectedAt": 99.0, "webEmail": TARGET_EMAIL,
+                           "message": "Chrome and Code switched", "recovered": True})
+        follow.assert_called_once_with(TARGET_EMAIL)
+
+    def test_browser_ready_leaves_a_partial_switch_for_another_account_or_code_login(self):
+        state = {"ok": False, "partial": True, "error": "code_only_after_web_failure",
+                 "browserError": "web_login_expired", "codeEmail": TARGET_EMAIL,
+                 "browserReady": False, "selectedAt": 99.0, "loginOpened": True}
+        self.base.mkdir(parents=True)
+        cases = ((OLD_EMAIL, TARGET_EMAIL, 99.0, "Chrome signed in to another account"),
+                 (TARGET_EMAIL, OLD_EMAIL, 99.0, "Code moved on since"),
+                 (TARGET_EMAIL, TARGET_EMAIL, 98.0, "an older selection"))
+        for email, identity, stamp, label in cases:
+            with self.subTest(case=label):
+                self.state.write_text(json.dumps(state))
+                self.code_identity.return_value = identity
+                with mock.patch.object(companion, "configured_emails", return_value={OLD_EMAIL, TARGET_EMAIL}), \
+                        mock.patch.object(companion, "spawn_extension_follow", autospec=True) as follow:
+                    ready = self.handle_native(
+                        {"action": "browser_ready", "email": email, "selectedAt": stamp})
+                self.assertEqual(ready, {"ok": False, "error": "selection_changed"})
+                self.assert_saved(state)
+                follow.assert_not_called()
+
+    def test_extension_follow_runs_detached_from_the_native_reply(self):
+        with mock.patch.object(companion.subprocess, "Popen", autospec=True) as popen:
+            companion.spawn_extension_follow(TARGET_EMAIL)
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0][0], sys.executable)
+        self.assertTrue(args[0][1].endswith("companion.py"))
+        self.assertEqual(args[0][2:], ["extension-follow", TARGET_EMAIL])
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertIs(kwargs["stdin"], companion.subprocess.DEVNULL)
+
+    def test_only_menu_switches_ask_chrome_to_open_sign_in(self):
+        companion.select_account(TARGET_EMAIL, open_login=True)
+        self.assertIs(self.browser_request.call_args.kwargs["open_login"], True)
+        for call in (lambda: companion.select_account(TARGET_EMAIL),
+                     lambda: companion.select_account(TARGET_EMAIL, verified_browser=True, open_login=False)):
+            self.browser_request.reset_mock()
+            call()
+            self.assertNotIn("open_login", self.browser_request.call_args.kwargs)
+        self.browser_request.reset_mock()
+        companion.select_browser(TARGET_EMAIL, open_login=True)
+        self.assertIs(self.browser_request.call_args.kwargs["open_login"], True)
+
+    def test_the_menu_commands_open_sign_in_and_automatic_ticks_do_not(self):
+        for argv, target in ((["switch", TARGET_EMAIL], "select_account"),
+                             (["browser-switch", TARGET_EMAIL], "select_browser")):
+            with self.subTest(command=argv[0]), \
+                    mock.patch.object(companion, target, autospec=True, return_value={"ok": True}) as run, \
+                    mock.patch.object(sys, "argv", ["companion.py", *argv]), redirect_stdout(io.StringIO()):
+                companion.main()
+            self.assertIs(run.call_args.kwargs["open_login"], True)
+        with mock.patch.object(companion, "auto_tick", autospec=True, return_value={"ok": True}) as tick, \
+                mock.patch.object(companion, "schedule_login_check", autospec=True) as schedule, \
+                mock.patch.object(sys, "argv", ["companion.py", "auto-tick", "95"]), redirect_stdout(io.StringIO()):
+            companion.main()
+        self.assertNotIn("open_login", tick.call_args.kwargs)
+        schedule.assert_called_once_with()
+
+    def test_a_dead_saved_login_is_marked_expired_and_the_opened_sign_in_is_reported(self):
+        self.base.mkdir(parents=True)
+        (self.base / "web-accounts.json").write_text(json.dumps([TARGET_EMAIL]))
+        (self.base / "web-accounts-meta.json").write_text(json.dumps({"expiries": {TARGET_EMAIL: 4_000_000_000}}))
+        self.browser_request.return_value = {"ok": False, "error": "web_login_expired", "rolledBack": True,
+                                             "failureStep": "verify_identity", "probeStatus": "signed_out",
+                                             "httpStatus": 200, "loginOpened": True}
+        result = companion.select_account(TARGET_EMAIL, open_login=True)
+
+        self.assertEqual(result["browserError"], "web_login_expired")
+        self.assertIs(result["loginOpened"], True)
+        self.assertLessEqual(companion.read_expiries()[TARGET_EMAIL], companion.time.time())
+
+    def test_a_later_save_replaces_the_expired_mark(self):
+        self.base.mkdir(parents=True)
+        (self.base / "web-accounts.json").write_text(json.dumps([TARGET_EMAIL]))
+        self.assertTrue(companion.mark_login_expired(TARGET_EMAIL, now=1_000.0))
+        self.assertEqual(companion.read_expiries(), {TARGET_EMAIL: 1_000.0})
+        entry = self.web_entry(value="fresh")
+        entry["cookies"] = [{"name": "sessionKey", "value": "fresh", "domain": ".claude.ai",
+                             "session": False, "expirationDate": 2_000_000_100}]
+        self.put_with_stored(None, entry)
+        self.assertEqual(companion.read_expiries(), {TARGET_EMAIL: 2_000_000_100})
+
+    def test_marking_ignores_logins_that_were_never_saved(self):
+        self.base.mkdir(parents=True)
+        self.assertFalse(companion.mark_login_expired(TARGET_EMAIL, now=1_000.0))
+        self.assertEqual(companion.read_expiries(), {})
 
     def test_selection_requires_the_active_code_login_and_a_valid_stamp(self):
         good = {"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": 10.0}
@@ -1459,6 +1551,93 @@ class ExpiryBackfillTests(unittest.TestCase):
         # Each email is read at most once per process, including one with nothing saved.
         self.assertEqual(sorted(reads), sorted([TARGET_EMAIL, OLD_EMAIL]))
         self.assertNotIn("secret", (self.base / "web-accounts-meta.json").read_text())
+
+
+class LoginCheckTests(unittest.TestCase):
+    """Saved web logins claude.ai has signed out are marked expired, so the app warns."""
+
+    LIVE, DEAD, FLAKY = "live@example.com", "dead@example.com", "flaky@example.com"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.stack = ExitStack()
+        self.stack.enter_context(mock.patch.object(companion, "BASE", self.base))
+        (self.base / "web-accounts.json").write_text(json.dumps([self.LIVE, self.DEAD, self.FLAKY]))
+        (self.base / "web-accounts-meta.json").write_text(json.dumps(
+            {"expiries": {email: 4_000_000_000 for email in (self.LIVE, self.DEAD, self.FLAKY)}}))
+
+    def tearDown(self):
+        self.stack.close()
+        self.temporary.cleanup()
+
+    @staticmethod
+    def saved(email):
+        return json.dumps({"email": email, "cookies": [
+            {"name": "sessionKey", "value": "secret-" + email, "domain": ".claude.ai",
+             "session": False, "expirationDate": 4_000_000_000},
+            {"name": "cf_clearance", "value": "browser-bound", "domain": ".claude.ai", "session": True}]})
+
+    def test_signed_out_logins_are_marked_and_unanswered_ones_left_alone(self):
+        replies = {"secret-" + self.LIVE: "live", "secret-" + self.DEAD: "dead", "secret-" + self.FLAKY: "unknown"}
+        sent = []
+        def probe(cookies):
+            sent.append([cookie["name"] for cookie in cookies])
+            return replies[cookies[0]["value"]]
+        with redirect_stdout(io.StringIO()) as output:
+            result = companion.check_logins(read=self.saved, probe=probe, now=2_000_000_000.0)
+            print(json.dumps(result))
+
+        self.assertEqual(result, {"ok": True, "checked": 3, "live": 1, "unknown": 1, "expired": [self.DEAD]})
+        self.assertEqual(companion.read_expiries(), {self.LIVE: 4_000_000_000, self.DEAD: 2_000_000_000.0,
+                                                     self.FLAKY: 4_000_000_000})
+        # Browser-bound Cloudflare cookies are never replayed; no cookie value is printed or stored.
+        self.assertEqual(sent, [["sessionKey"]] * 3)
+        self.assertNotIn("secret", output.getvalue())
+        self.assertNotIn("secret", (self.base / "web-accounts-meta.json").read_text())
+        self.assertEqual(json.loads((self.base / "login-check.json").read_text()), {"lastRun": 2_000_000_000.0})
+
+    def test_bootstrap_replies_are_classified_conservatively(self):
+        import urllib.error
+
+        def reply(body):
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps(body).encode()
+            return response
+
+        def refused(code, content_type="application/json", **headers):
+            message = mock.Mock()
+            message.get.side_effect = lambda key, default=None: {"Content-Type": content_type, **headers}.get(key, default)
+            return urllib.error.HTTPError(companion.BOOTSTRAP_URL, code, "x", message, None)
+
+        cookies = [{"name": "sessionKey", "value": "secret"}]
+        cases = (
+            (reply({"account": None, "locale": "en"}), "dead"),
+            (reply({"account": {"email_address": "a@example.com"}}), "live"),
+            (reply({"unexpected": True}), "unknown"),
+            (refused(401), "dead"),
+            (refused(403), "dead"),
+            (refused(403, "text/html", **{"cf-mitigated": "challenge"}), "unknown"),
+            (refused(429), "unknown"),
+            (refused(503), "unknown"),
+            (urllib.error.URLError("offline"), "unknown"),
+        )
+        for outcome, expected in cases:
+            with self.subTest(expected=expected, outcome=repr(outcome)[:60]):
+                with mock.patch("urllib.request.urlopen", side_effect=[outcome]) as urlopen:
+                    self.assertEqual(companion.bootstrap_status(cookies), expected)
+                request = urlopen.call_args.args[0]
+                self.assertEqual(request.full_url, companion.BOOTSTRAP_URL)
+                self.assertEqual(request.get_header("Cookie"), "sessionKey=secret")
+
+    def test_the_automatic_check_runs_at_most_every_six_hours(self):
+        with mock.patch.object(companion.subprocess, "Popen", autospec=True) as popen:
+            self.assertTrue(companion.schedule_login_check(now=1_000_000.0))
+            self.assertFalse(companion.schedule_login_check(now=1_000_000.0 + 6 * 3600 - 1))
+            self.assertTrue(companion.schedule_login_check(now=1_000_000.0 + 6 * 3600))
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(popen.call_args.args[0][2:], ["check-logins"])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
 
 class FollowExtensionTests(unittest.TestCase):

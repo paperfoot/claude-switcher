@@ -8,7 +8,7 @@ import stat
 
 MAX_BYTES = 262144
 EVENTS = {'switch_started', 'switch_finished', 'browser_profile_finished', 'native_error', 'browser_error', 'code_cache_synced',
-          'official_extension_finished'}
+          'official_extension_finished', 'browser_recovered', 'login_check_finished'}
 ERRORS = set('''unknown_error switch_in_progress web_login_needed web_login_expired
 web_switch_failed web_restore_failed web_identity_mismatch web_unavailable
 code_switch_failed code_restore_failed code_only_after_web_failure
@@ -38,11 +38,11 @@ def _record(event, fields):
             record[key] = value
         elif key == 'probeStatus' and isinstance(value, str) and value in PROBES:
             record[key] = value
-        elif key in ('ok', 'partial', 'rolledBack', 'browserReady', 'extensionReady') and type(value) is bool:
+        elif key in ('ok', 'partial', 'rolledBack', 'browserReady', 'extensionReady', 'loginOpened') and type(value) is bool:
             record[key] = value
         elif key == 'extension' and value in ('opened', 'not_installed', 'disabled', 'no_profiles'):
             record[key] = value
-        elif key in ('durationMs', 'profileCount', 'expectedProfiles', 'opened') and type(value) is int and 0 <= value <= 2**31:
+        elif key in ('durationMs', 'profileCount', 'expectedProfiles', 'opened', 'checked', 'expired') and type(value) is int and 0 <= value <= 2**31:
             record[key] = value
         elif key == 'httpStatus' and type(value) is int and 100 <= value <= 599:
             record[key] = value

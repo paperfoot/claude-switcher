@@ -151,7 +151,8 @@ def refresh_code_cache(email):
         return {'ok': False, 'error': 'code_cache_sync_failed'}
 
 
-def browser_request(command, email=None, expected_profiles=1, exclude=None, deadline=None, selected_at=None):
+def browser_request(command, email=None, expected_profiles=1, exclude=None, deadline=None, selected_at=None,
+                    open_login=False):
     try:
         from . import browser_profiles
     except ImportError:
@@ -165,7 +166,7 @@ def browser_request(command, email=None, expected_profiles=1, exclude=None, dead
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: return {'ok': False, 'error': 'switch_in_progress'}
         result = browser_profiles.switch(BASE, email, expected_profiles, exclude,
-                                         deadline=deadline, selected_at=selected_at)
+                                         deadline=deadline, selected_at=selected_at, open_login=open_login)
         if result.get('error') == 'browser_profiles_missing' and result.get('profileCount') == 0 and expected_profiles == 1:
             result['error'] = 'browser_missing'
         return result
@@ -220,7 +221,7 @@ def wait_for_lock(lock, deadline=None, cap=None):
 
 
 @logged_switch('chrome')
-def select_browser(email, expected_profiles=1, deadline=None):
+def select_browser(email, expected_profiles=1, deadline=None, open_login=False):
     deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -231,15 +232,22 @@ def select_browser(email, expected_profiles=1, deadline=None):
         # A deliberate Chrome-only choice also supersedes older Code selections, so
         # a profile that reconnects later does not switch back to the Code account.
         result = browser_request('switch', email, expected_profiles=expected_profiles,
-                                 deadline=deadline, selected_at=time.time())
+                                 deadline=deadline, selected_at=time.time(),
+                                 **({'open_login': True} if open_login else {}))
+        if login_dead(result):
+            mark_login_expired(email)
         if result.get('ok') and result.get('email') == email and result.get('profileCount'):
             result.update(follow_extension(email, deadline))
         return result
 
 
 @logged_switch('claude')
-def select_account(email, include_browser=True, verified_browser=False, deadline=None):
-    """Switch Code, then Chrome, finishing (including rollback) before `deadline`."""
+def select_account(email, include_browser=True, verified_browser=False, deadline=None, open_login=False):
+    """Switch Code, then Chrome, finishing (including rollback) before `deadline`.
+
+    `open_login` is for menu switches: a profile whose saved login is dead opens
+    Claude's sign-in page, so signing in once finishes the switch.
+    """
     deadline = deadline or deadlines.Deadline(deadlines.MENU_BUDGET)
     email = validate_email(email)
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -277,7 +285,8 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
                     web = browser_request('switch', email, expected_profiles=0, exclude=SOCKET,
                                           deadline=deadline, selected_at=selected_at)
                 else:
-                    web = browser_request('switch', email, deadline=deadline, selected_at=selected_at)
+                    web = browser_request('switch', email, deadline=deadline, selected_at=selected_at,
+                                          **({'open_login': True} if open_login else {}))
             except FileNotFoundError: pass
             except (OSError, TimeoutError, ValueError):
                 web = {'ok': False, 'error': 'web_unavailable'}
@@ -290,7 +299,9 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
                           'browserError': web.get('error', 'web_unavailable'),
                           'codeEmail': email, 'webEmail': web.get('email'), 'browserReady': False,
                           'selectedAt': selected_at}
-                result.update({key: web[key] for key in ('failureStep', 'cookieName', 'failedConnection', 'rolledBack', 'probeStatus', 'httpStatus') if key in web})
+                result.update({key: web[key] for key in ('failureStep', 'cookieName', 'failedConnection', 'rolledBack', 'probeStatus', 'httpStatus', 'loginOpened') if key in web})
+                if login_dead(web):
+                    mark_login_expired(email)
                 atomic_json(STATE, result)
                 return result
         result = {'ok': True, 'codeEmail': email, 'webEmail': web.get('email') if web.get('ok') else None,
@@ -410,6 +421,8 @@ def auto_tick(threshold, deadline=None, events=None):
         if not ready and web.get('error') != 'browser_missing':
             state.update(ok=False, partial=True, error='code_only_after_web_failure',
                          browserError=web.get('error', 'web_unavailable'))
+            if login_dead(web):
+                mark_login_expired(email)
         followed = follow_extension(email, deadline) if ready and web.get('profileCount') else {}
         state.update(followed)
         atomic_json(STATE, state)
@@ -534,6 +547,156 @@ def remember_web_account(email, expiry):
             atomic_json(BASE / 'web-accounts-meta.json', {'expiries': expiries})
 
 
+# Chrome failure details a recovered partial switch no longer carries.
+RECOVERED_FIELDS = ('partial', 'error', 'browserError', 'failureStep', 'probeStatus', 'httpStatus',
+                    'rolledBack', 'loginOpened', 'cookieName', 'failedConnection')
+
+
+def spawn_extension_follow(email):
+    """Run `extension-follow` in its own detached process.
+
+    It contacts every Chrome profile, this native host included, so it cannot run
+    inside a native-message reply. Best effort: a failure leaves the switch as it is.
+    """
+    try:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'extension-follow', email],
+                         env=clean_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+    except OSError:
+        event_log.emit(BASE, 'native_error', error='extension_follow_failed')
+
+
+def login_dead(web):
+    """True when a profile reported the saved login as signed out or expired by claude.ai."""
+    return (web.get('error') == 'web_login_expired' or web.get('browserError') == 'web_login_expired'
+            or web.get('probeStatus') == 'signed_out')
+
+
+def mark_login_expired(email, now=None):
+    """Record a saved web login claude.ai no longer accepts as expired now, so the app warns.
+
+    Its cookies can still look valid for weeks. The next save for `email` replaces the mark.
+    """
+    now = time.time() if now is None else now
+    path = BASE / 'web-accounts.json'
+    try:
+        with open(BASE / 'web-accounts.lock', 'a') as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            emails = json.loads(path.read_text()) if path.exists() else []
+            if email not in emails:
+                return False
+            expiries = read_expiries()
+            if expiries.get(email, math.inf) <= now:
+                return False
+            expiries[email] = now
+            atomic_json(BASE / 'web-accounts-meta.json', {'expiries': expiries})
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+LOGIN_CHECK_INTERVAL = 6 * 60 * 60
+LOGIN_CHECK_TIMEOUT = 10
+LOGIN_CHECK_FILE = 'login-check.json'
+BOOTSTRAP_URL = 'https://claude.ai/api/bootstrap'
+WEB_SERVICE = 'Paperfoot Claude Switcher Web'
+
+
+def bootstrap_status(cookies, timeout=LOGIN_CHECK_TIMEOUT):
+    """'live', 'dead' or 'unknown' for one saved login, from claude.ai's bootstrap reply.
+
+    The cookie values go only into the request header to claude.ai.
+    """
+    import urllib.error
+    import urllib.request
+    header = '; '.join(f"{cookie['name']}={cookie['value']}" for cookie in cookies
+                       if isinstance(cookie.get('name'), str) and isinstance(cookie.get('value'), str))
+    if not header:
+        return 'unknown'
+    request = urllib.request.Request(BOOTSTRAP_URL, headers={
+        'Cookie': header, 'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read(2_000_000))
+    except urllib.error.HTTPError as error:
+        # A Cloudflare challenge is also a 403; only Claude's own JSON refusal counts.
+        if error.code == 401:
+            return 'dead'
+        if error.code == 403 and 'json' in (error.headers.get('Content-Type') or '') \
+                and not error.headers.get('cf-mitigated'):
+            return 'dead'
+        return 'unknown'
+    except (OSError, ValueError):
+        return 'unknown'
+    if isinstance(data, dict) and 'account' in data and data['account'] is None:
+        return 'dead'
+    return 'live' if isinstance(data, dict) and isinstance(data.get('account'), dict) else 'unknown'
+
+
+def check_logins(read=None, probe=None, now=None):
+    """Probe every saved web login once and mark the ones claude.ai signed out as expired.
+
+    Network failures, rate limits and server errors change nothing.
+    """
+    now = time.time() if now is None else now
+    if read is None:
+        from claude_swap import macos_keychain
+        read = lambda email: macos_keychain.get_password(WEB_SERVICE, email)
+    probe = probe or bootstrap_status
+    BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    atomic_json(BASE / LOGIN_CHECK_FILE, {'lastRun': now})
+    path = BASE / 'web-accounts.json'
+    emails = json.loads(path.read_text()) if path.exists() else []
+    expired, live, unknown = [], 0, 0
+    for email in emails:
+        try:
+            raw = read(email)
+            entry = json.loads(raw) if raw else None
+            cookies = restorable_web_entry(entry, now)['cookies'] if isinstance(entry, dict) else []
+            cookies = [cookie for cookie in cookies if isinstance(cookie, dict)
+                       and str(cookie.get('domain', '')).lstrip('.').endswith('claude.ai')]
+            status = probe(cookies) if cookies else 'unknown'
+        except Exception:
+            status = 'unknown'
+        if status == 'dead':
+            mark_login_expired(email, now)
+            expired.append(email)
+        elif status == 'live':
+            live += 1
+        else:
+            unknown += 1
+    event_log.emit(BASE, 'login_check_finished', ok=True, checked=len(emails), expired=len(expired))
+    return {'ok': True, 'checked': len(emails), 'live': live, 'unknown': unknown, 'expired': expired}
+
+
+def login_check_due(now=None):
+    now = time.time() if now is None else now
+    try:
+        last = json.loads((BASE / LOGIN_CHECK_FILE).read_text()).get('lastRun')
+    except (OSError, ValueError, AttributeError):
+        return True
+    return not isinstance(last, (int, float)) or isinstance(last, bool) or not math.isfinite(last) \
+        or now - last >= LOGIN_CHECK_INTERVAL or last > now
+
+
+def schedule_login_check(now=None):
+    """From the automatic tick: start `check-logins` in the background at most every six hours."""
+    now = time.time() if now is None else now
+    if not login_check_due(now):
+        return False
+    try:
+        atomic_json(BASE / LOGIN_CHECK_FILE, {'lastRun': now})
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'check-logins'],
+                         env=clean_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+
 # Emails whose saved login this host process has already inspected for an expiry.
 _EXPIRY_CHECKED = set()
 
@@ -646,16 +809,25 @@ def handle_native(message):
             # Read the Code identity without the lock so a menu switch is never refused.
             if state.get('codeEmail') != email or state.get('selectedAt') != selected_at or code_identity() != email:
                 return {'ok': False, 'error': 'selection_changed'}
-            if state.get('ok') is not True:
-                # A partial result keeps its Chrome failure details for diagnostics.
+            # A partial result is Code switched and Chrome left behind, for example on a dead
+            # saved login. Chrome now has the selected account, usually after the user signed
+            # in, so the switch is complete; the Claude extension still has to follow.
+            recovering = state.get('ok') is not True
+            if recovering and state.get('partial') is not True:
                 return {'ok': True}
             with open(BASE / 'switch.lock', 'a') as lock:
                 if not wait_for_lock(lock, cap=deadlines.POPUP_LOCK_WAIT):
                     return {'ok': False, 'error': 'switch_in_progress'}
                 if read_state() != state:
                     return {'ok': False, 'error': 'selection_changed'}
+                if recovering:
+                    state = {key: value for key, value in state.items() if key not in RECOVERED_FIELDS}
+                    state.update(ok=True, recovered=True)
                 state.update(browserReady=True, webEmail=email, message='Chrome and Code switched')
                 atomic_json(STATE, state)
+            if recovering:
+                event_log.emit(BASE, 'browser_recovered', ok=True, browserReady=True)
+                spawn_extension_follow(email)
             return {'ok': True}
         if action == 'select':
             # The initiating profile is waiting for this reply; contact only the other hosts.
@@ -695,7 +867,7 @@ def main():
             args = parser.parse_args(sys.argv[2:])
             if args.expect_profiles < 1: parser.error('--expect-profiles must be at least 1')
             result = select_browser(args.email, expected_profiles=args.expect_profiles,
-                                    deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
+                                    deadline=deadlines.Deadline(deadlines.MENU_BUDGET), open_login=True)
         elif command == 'extension-follow':
             result = extension_follow(sys.argv[2] if len(sys.argv) > 2 else '')
         elif command == 'snapshot':
@@ -706,11 +878,14 @@ def main():
             except ValueError:
                 threshold = float('nan')
             result = auto_tick(threshold, deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
+            schedule_login_check()
+        elif command == 'check-logins':
+            result = check_logins()
         elif command == 'switch' and len(sys.argv) < 3:
             result = {'ok': False, 'error': 'invalid_request', 'message': 'Usage: companion.py switch EMAIL'}
         elif command == 'switch':
             # The menu app kills this helper after 350 s; finish well before that.
-            result = select_account(sys.argv[2], deadline=deadlines.Deadline(deadlines.MENU_BUDGET))
+            result = select_account(sys.argv[2], deadline=deadlines.Deadline(deadlines.MENU_BUDGET), open_login=True)
         else:
             result = {'ok': False, 'error': 'unknown_action'}
     except Exception as error:

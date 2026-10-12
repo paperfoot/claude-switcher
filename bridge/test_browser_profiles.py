@@ -442,6 +442,29 @@ class StampTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(sorted(stamp for _, stamp in sent), [123.0, 123.0])
 
+    def test_only_profiles_that_switch_are_asked_to_open_sign_in(self):
+        sent = []
+        def sender(path, command, email, **options):
+            path = Path(path)
+            if command == "status":
+                current = "target@example.com" if path.name == "a.sock" else "old@example.com"
+                return {"ok": True, "email": current, "accounts": []}
+            sent.append((path.name, email, options.get("open_login", False)))
+            if path.name == "b.sock" and email == "target@example.com":
+                return {"ok": False, "error": "web_login_expired", "failureStep": "verify_identity",
+                        "probeStatus": "signed_out", "httpStatus": 200, "loginOpened": True}
+            return {"ok": True, "email": email}
+        with mock.patch.object(browser_profiles.profile_transport, "connection_paths",
+                               return_value=[Path("/tmp/a.sock"), Path("/tmp/b.sock")]):
+            result = browser_profiles.switch(Path("/tmp"), "target@example.com", expected_profiles=2,
+                                             sender=sender, deadline=browser_profiles.deadlines.Deadline(300),
+                                             selected_at=1.0, open_login=True)
+        self.assertEqual(result["error"], "web_login_expired")
+        self.assertIs(result["loginOpened"], True)
+        self.assertEqual(result["probeStatus"], "signed_out")
+        # The profile already on the target only records the stamp; only b may open sign-in.
+        self.assertEqual(sent, [("a.sock", "target@example.com", False), ("b.sock", "target@example.com", True)])
+
 
 class OfficialSender:
     """Answers status, official_prepare and official_finish like connected companions."""

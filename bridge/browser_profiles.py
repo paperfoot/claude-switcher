@@ -32,11 +32,12 @@ def _status(path, deadline, sender):
     return _send(path, 'status', None, sender, timeout=timeout)
 
 
-def _switch(path, email, deadline, sender, restores, selected_at=None):
+def _switch(path, email, deadline, sender, restores, selected_at=None, open_login=False):
     """Switch one profile, replying while `restores` changed profiles can still be restored.
 
     `selected_at` stamps a deliberate selection; the profile records it so it never
-    re-applies an older one. Rollbacks carry none. Returns None without contacting
+    re-applies an older one. Rollbacks carry none. `open_login` (menu switches only) lets
+    the profile open Claude's sign-in page when the saved login is dead. Returns None without contacting
     the profile when too little time is left.
     """
     reserve = restores * deadlines.PROFILE_RESTORE_RESERVE
@@ -45,6 +46,8 @@ def _switch(path, email, deadline, sender, restores, selected_at=None):
     options = {'deadline': deadline.unix_ms(reserve)}
     if selected_at is not None:
         options['selected_at'] = selected_at
+    if open_login:
+        options['open_login'] = True
     result = _send(path, 'switch', email, sender, **options)
     if result.get('error') == 'invalid_request':
         # A host started before an update still runs the old validator, which refuses the
@@ -132,7 +135,8 @@ def _restore(changed, deadline, sender):
     return restored
 
 
-def switch(base, email, expected_profiles=1, exclude=None, sender=None, deadline=None, selected_at=None):
+def switch(base, email, expected_profiles=1, exclude=None, sender=None, deadline=None, selected_at=None,
+           open_login=False):
     """Restore already-changed profiles if another profile rejects the selection.
 
     Every reply is due early enough to restore the profiles changed so far before
@@ -165,7 +169,8 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None, deadline
             continue
         index = pending.index(path)
         # If a later profile fails, this one must be restored too; the last needs no slot.
-        result = _switch(path, email, deadline, sender, min(index + 1, len(pending) - 1), selected_at)
+        result = _switch(path, email, deadline, sender, min(index + 1, len(pending) - 1), selected_at,
+                         open_login)
         if result is None:
             result = {'ok': False, 'error': 'browser_timeout'}
         else:
@@ -178,7 +183,7 @@ def switch(base, email, expected_profiles=1, exclude=None, sender=None, deadline
         return {**_summary([(p, _status(p, deadline, sender)) for p, _ in rows]),
                 'ok': False, 'error': result.get('error', 'web_identity_mismatch') if restored else 'web_restore_failed',
                 'rolledBack': restored, 'failedConnection': path.name,
-                **{key: result[key] for key in ('failureStep', 'cookieName', 'probeStatus', 'httpStatus') if key in result}}
+                **{key: result[key] for key in ('failureStep', 'cookieName', 'probeStatus', 'httpStatus', 'loginOpened') if key in result}}
     return _summary(final)
 
 

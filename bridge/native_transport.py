@@ -182,6 +182,8 @@ class _ClientRequest:
     deadline: float | None = None
     # Unix seconds of the selection a switch implements; the profile records it.
     selected_at: float | None = None
+    # A menu switch: when the saved login is dead, the profile opens Claude's sign-in page.
+    open_login: bool = False
 
 
 def _validate_client_request(message: object) -> _ClientRequest | None:
@@ -203,16 +205,19 @@ def _validate_client_request(message: object) -> _ClientRequest | None:
         email = message.get("email")
         if not _bounded_string(email, MAX_EMAIL_LENGTH):
             return None
-        allowed = {"id", "command", "email", "deadline", "selectedAt"}
+        allowed = {"id", "command", "email", "deadline", "selectedAt", "openLogin"}
         if not {"id", "command", "email"} <= set(message) <= allowed:
             return None
         deadline = message.get("deadline")
         selected_at = message.get("selectedAt")
+        open_login = message.get("openLogin", False)
         if deadline is not None and not _timestamp(deadline):
             return None
         if selected_at is not None and not _timestamp(selected_at):
             return None
-        return _ClientRequest(request_id, command, email, deadline, selected_at)
+        if type(open_login) is not bool:
+            return None
+        return _ClientRequest(request_id, command, email, deadline, selected_at, open_login)
     if set(message) != {"id", "command"}:
         return None
     return _ClientRequest(request_id, command)
@@ -461,6 +466,8 @@ def run_host(
                                         forwarded["email"] = request.email
                                         if request.selected_at is not None:
                                             forwarded["selectedAt"] = request.selected_at
+                                        if request.open_login:
+                                            forwarded["openLogin"] = True
                                         # Leave time for browser rollback before the reply is due.
                                         forwarded["expiresAt"] = (
                                             time.time() + reply_within - BROWSER_ROLLBACK_GRACE
@@ -520,12 +527,14 @@ def send_request(
     timeout: float = 50,
     deadline: float | None = None,
     selected_at: float | None = None,
+    open_login: bool = False,
 ) -> dict:
     """Send one request to a running host and return its result.
 
     `timeout` bounds the whole exchange. A switch may instead carry `deadline`
     (Unix milliseconds): the host replies by then, and this waits a little longer.
     `selected_at` (Unix seconds) stamps the selection the switch implements.
+    `open_login` asks the profile to open Claude's sign-in page if the saved login is dead.
     """
 
     request_id = os.urandom(16).hex()
@@ -534,6 +543,8 @@ def send_request(
         message["email"] = email
     if selected_at is not None:
         message["selectedAt"] = selected_at
+    if open_login:
+        message["openLogin"] = True
     if deadline is not None:
         message["deadline"] = deadline
         timeout = deadline / 1000 - time.time() + CLIENT_DEADLINE_MARGIN

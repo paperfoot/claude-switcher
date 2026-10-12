@@ -299,6 +299,24 @@ class NativeTransportTests(unittest.TestCase):
                                     '"selectedAt":' + stamp + '}\n').encode())
                     self.assertEqual(_read_line(client), {"ok": False, "error": "invalid_request"})
 
+    def test_menu_switches_forward_open_login_and_refuse_other_values(self):
+        host = self.start_host()
+        with self.connect() as client:
+            client.sendall(b'{"id":"o1","command":"switch","email":"one@example.com","openLogin":true}\n')
+            forwarded = _read_native(host.proc.stdout)
+            self.assertIs(forwarded["openLogin"], True)
+            host.write_native({"type": "result", "id": "o1", "result": {"ok": False, "loginOpened": True}})
+            self.assertEqual(_read_line(client), {"ok": False, "loginOpened": True})
+            client.sendall(b'{"id":"o2","command":"switch","email":"one@example.com","openLogin":false}\n')
+            self.assertNotIn("openLogin", _read_native(host.proc.stdout))
+            host.write_native({"type": "result", "id": "o2", "result": {"ok": True}})
+            self.assertEqual(_read_line(client), {"ok": True})
+            for value in ('"yes"', "1", "null"):
+                with self.subTest(value=value):
+                    client.sendall(('{"id":"o3","command":"switch","email":"one@example.com",'
+                                    '"openLogin":' + value + '}\n').encode())
+                    self.assertEqual(_read_line(client), {"ok": False, "error": "invalid_request"})
+
     def test_official_extension_commands_are_forwarded_and_validated(self):
         host = self.start_host()
         with self.connect() as client:
