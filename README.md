@@ -38,6 +38,26 @@ A small native menu bar app for Macs with more than one Claude or Codex subscrip
 
 <sub>Example accounts. Which usage windows appear depends on the provider.</sub>
 
+## Quick start
+
+1. **Install** the app and its helpers (about two minutes, details in [Install](#install)):
+
+   ```sh
+   git clone https://github.com/paperfoot/claude-switcher.git && cd claude-switcher
+   uv tool install 'claude-swap==0.26.0'
+   CODESIGN_IDENTITY=- make install && python3 scripts/setup-coordinated.py
+   open -a "Claude Switcher"
+   ```
+
+2. **Connect Chrome once:** in `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick `~/Library/Application Support/Claude Switcher/BrowserExtension`. Then sign in to each account at claude.ai through the companion's **Add another account**.
+3. **Allow Accessibility** when macOS asks. The switcher uses it only to press **Log in** on Anthropic's Claude extension after a switch.
+4. **Switch:** press **⌥Space**, type a few letters of an account, press **↩**.
+
+Updates after that need nothing from you; the Chrome companion reloads itself.
+
+> **Let your agent do it.** Paste this into Claude Code:
+> `Install https://github.com/paperfoot/claude-switcher on this Mac following its README, then add my Claude accounts.`
+
 ## Use it
 
 Press **⌥Space** anywhere, or choose **Command…** in the menu bar. Type a few letters of an account, then press **↩**.
