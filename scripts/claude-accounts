@@ -20,6 +20,8 @@ def main():
                         help='Fail before switching if fewer profiles are connected')
     both = commands.add_parser('claude', help='Switch Claude Code and all connected Chrome profiles')
     both.add_argument('email')
+    extension = commands.add_parser('extension', help="Sign Chrome's official Claude extension in to the account Chrome already uses")
+    extension.add_argument('email')
     args = parser.parse_args()
     if args.command == 'accounts':
         executable = '/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher'
@@ -40,6 +42,8 @@ def main():
         command = ['browser-switch', args.email, '--expect-profiles', str(args.expect_profiles)]
     elif args.command == 'claude':
         command = ['switch', args.email]
+    elif args.command == 'extension':
+        command = ['extension-follow', args.email]
     elif args.command == 'logs':
         command = ['logs']
     elif args.command == 'refresh-code':
