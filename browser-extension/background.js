@@ -221,8 +221,28 @@ async function runCatchUp() {
     catchUpDue = true;
   }
 }
+// Chrome keeps running an unpacked extension's old code after the app updates its
+// files. Reload once when the manifest on disk names another version, so nobody
+// has to click Reload in chrome://extensions. At most once per RELOAD_RETRY_MS.
+const RELOAD_KEY = 'updateReloadAt';
+const RELOAD_RETRY_MS = 10 * 60 * 1000;
+async function reloadIfUpdated() {
+  if (switching() || incomingCommands || requests.size || officialFollower?.armed()) return false;
+  let onDisk;
+  try {
+    const response = await fetch(chrome.runtime.getURL('manifest.json'), {cache: 'no-store'});
+    onDisk = (await response.json()).version;
+  } catch { return false; }
+  if (typeof onDisk !== 'string' || onDisk === chrome.runtime.getManifest().version) return false;
+  const stored = await chrome.storage.local.get(RELOAD_KEY).catch(() => ({}));
+  if (Date.now() - (stored?.[RELOAD_KEY] ?? 0) < RELOAD_RETRY_MS) return false;
+  await chrome.storage.local.set({[RELOAD_KEY]: Date.now()}).catch(() => {});
+  chrome.runtime.reload();
+  return true;
+}
 async function maintainConnection() {
   if(healthCheckRunning || popupSwitchInProgress || incomingCommands || requests.size)return;
+  if (await reloadIfUpdated()) return;
   healthCheckRunning=true;
   const previous=port;
   try {
