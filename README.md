@@ -123,7 +123,7 @@ Chrome only runs an unpacked extension that you load yourself. The installer cha
 
 The palette's **Connect Chrome…** command shows the same steps. Each Chrome profile follows the selected account when it next connects, so a profile that was closed during a switch catches up later.
 
-After every update, open `chrome://extensions` and click **Reload** on **Claude Switcher Companion**. Chrome can keep an unpacked extension's old code even after a restart. Your saved accounts stay in the Keychain.
+Updates need nothing from you: from companion 0.9.1 on, the companion notices within a minute that the app installed newer files and reloads itself. Your saved accounts stay in the Keychain.
 
 ## Codex accounts
 
