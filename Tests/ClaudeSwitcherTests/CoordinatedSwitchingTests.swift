@@ -101,7 +101,7 @@ struct CoordinatedSwitchingTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let result = try CoordinatedSwitching.select(email: "one@example.com", setup: setup)
         #expect(result.codeSwitched)
-        #expect(result.summary == "Code switched · Chrome could not switch")
+        #expect(result.summary == "Code switched · Chrome kept the previous account")
     }
 
     @Test func aHungHelperIsStoppedWithItsStderrTail() throws {

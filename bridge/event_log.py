@@ -22,7 +22,7 @@ native_timeout unauthorized forbidden network_error rate_limited server_error
 official_unavailable extension_follow_failed extension_not_signed_in consent_refused
 accessibility_needed timeout helper_missing helper_timeout helper_failed'''.split())
 STEPS = {'capture_session', 'clear_cookies', 'restore_cookies', 'verify_identity', 'activate_code', 'save_session', 'connect'}
-PROBES = {'verified', 'unauthorized', 'forbidden', 'network_error', 'rate_limited', 'server_error', 'invalid_response', 'identity_mismatch'}
+PROBES = {'verified', 'unauthorized', 'forbidden', 'network_error', 'rate_limited', 'server_error', 'invalid_response', 'identity_mismatch', 'signed_out'}
 
 
 def _record(event, fields):

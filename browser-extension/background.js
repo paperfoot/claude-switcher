@@ -61,8 +61,12 @@ async function probe() {
         if(response.status!==404) diagnostic={httpStatus:response.status,probeStatus:response.status===401?'unauthorized':response.status===403?'forbidden':response.status===429?'rate_limited':'server_error'};
         continue;
       }
-      const email=identityFrom(await response.json());
+      const data=await response.json();
+      const email=identityFrom(data);
       if(email) {probe.diagnostic={probeStatus:'verified',httpStatus:response.status}; return email;}
+      // claude.ai answers a revoked login with 200 and a null account; the saved cookies
+      // can still look unexpired, so only this reply shows the login needs signing in again.
+      if(data && typeof data==='object' && (data.account===null || data.current_account===null)) diagnostic={probeStatus:'signed_out',httpStatus:response.status};
     } catch { if(!diagnostic.httpStatus) diagnostic={probeStatus:'network_error'}; }
   }
   probe.diagnostic=diagnostic;

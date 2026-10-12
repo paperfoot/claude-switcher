@@ -99,12 +99,12 @@ public struct CoordinatedResult: Decodable, Sendable {
         case "switch_in_progress": return "Another switch is finishing"
         case "code_only_after_web_failure":
             switch browserError {
-            case "web_login_needed", "web_login_expired": return "Code switched · sign in to Claude.ai once"
+            case "web_login_needed", "web_login_expired": return "Code switched · Chrome login expired, sign in to claude.ai once"
             case "host_timeout", "host_disconnected", "host_unavailable", "web_unavailable": return "Code switched · Chrome is not responding"
             case "browser_timeout": return "Code switched · Chrome took too long"
             case "switch_in_progress": return "Code switched · Chrome is busy"
             case "web_restore_failed": return "Code switched · Chrome needs attention"
-            default: return "Code switched · Chrome could not switch"
+            default: return "Code switched · Chrome kept the previous account"
             }
         case "code_restore_failed", "web_restore_failed": return "Account needs attention · check Chrome and Code"
         case "keychain_unavailable": return "Keychain is locked · unlock it and try again"

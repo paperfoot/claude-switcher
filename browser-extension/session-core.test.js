@@ -623,6 +623,15 @@ test('an unauthorized target is reported as expired and preserves the failed pro
   assert.equal(await rig.probe(),EMAIL.A);
 });
 
+test('a target claude.ai reports as signed out is reported as expired, not as a broken switch', async () => {
+  const rig = makeRig({identityForKey:{A:EMAIL.A}});
+  rig.probe.diagnostic={probeStatus:'signed_out',httpStatus:200};
+  const result = await rig.switcher.switchTo(EMAIL.B);
+  assert.equal(result.error,'web_login_expired');
+  assert.equal(result.probeStatus,'signed_out');
+  assert.equal(await rig.probe(),EMAIL.A);
+});
+
 test('a switch that is no longer wanted when its turn comes changes nothing', async () => {
   const rig = makeRig();
   const before = JSON.stringify(rig.browser.jar ?? null);

@@ -191,7 +191,7 @@ export class SessionSwitcher {
       if (identity !== email) {
         verification = {...this.probe.diagnostic};
         if (identity) verification.probeStatus = 'identity_mismatch';
-        if (verification.probeStatus === 'unauthorized') failure = 'web_login_expired';
+        if (['unauthorized', 'signed_out'].includes(verification.probeStatus)) failure = 'web_login_expired';
         throw new Error('Restored account could not be verified');
       }
       if (expired()) throw new Error('Switch timed out');
