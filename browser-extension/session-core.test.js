@@ -149,6 +149,7 @@ function makeRig({
   identityForKey = {A: EMAIL.A, B: EMAIL.B, C: EMAIL.C},
   probe: probeOverride,
   onSet,
+  openLoginFails = false,
 } = {}) {
   let jar = clone(initialCookies);
   let url = 'https://claude.ai/chat';
@@ -179,6 +180,11 @@ function makeRig({
     async refresh(nextURL) {
       events.push(`browser:refresh:${nextURL}`);
       url = nextURL;
+    },
+    async openLogin() {
+      events.push('browser:openLogin');
+      if (openLoginFails) throw new Error('No tab');
+      url = 'https://claude.ai/login';
     },
   };
 
@@ -630,6 +636,41 @@ test('a target claude.ai reports as signed out is reported as expired, not as a 
   assert.equal(result.error,'web_login_expired');
   assert.equal(result.probeStatus,'signed_out');
   assert.equal(await rig.probe(),EMAIL.A);
+});
+
+test('a chosen switch to a dead login saves the current one and leaves Chrome at sign-in', async () => {
+  const dead = savedSession('B', {cookies: [sessionCookie('B', {session: false, expirationDate: 1})]});
+  const rig = makeRig({entries: [savedSession('A'), dead]});
+  const result = await rig.switcher.switchTo(EMAIL.B, null, Infinity, null, {openLogin: true});
+  assert.equal(result.error, 'web_login_expired');
+  assert.equal(result.loginOpened, true);
+  assert.equal(await rig.probe(), null);
+  const events = rig.events.filter(event => /^(vault:put|browser:clear|browser:openLogin)/.test(event));
+  assert.deepEqual(events, ['vault:put:a@example.com', 'browser:clear', 'browser:openLogin']);
+});
+
+test('a revoked target opens sign-in after the rollback, keeping the restored login saved', async () => {
+  const rig = makeRig({identityForKey: {A: EMAIL.A}});
+  rig.probe.diagnostic = {probeStatus: 'signed_out', httpStatus: 200};
+  const result = await rig.switcher.switchTo(EMAIL.B, null, Infinity, null, {openLogin: true});
+  assert.equal(result.error, 'web_login_expired');
+  assert.equal(result.loginOpened, true);
+  assert.ok(rig.events.includes('vault:put:a@example.com'));
+  assert.equal(rig.events.at(-1), 'browser:openLogin');
+});
+
+test('without openLogin, or when sign-in cannot open, a dead login only rolls back', async () => {
+  const dead = savedSession('B', {cookies: [sessionCookie('B', {session: false, expirationDate: 1})]});
+  for (const [options, rigOptions] of [[{}, {}], [{openLogin: true}, {openLoginFails: true}]]) {
+    const rig = makeRig({entries: [savedSession('A'), dead], ...rigOptions});
+    const result = await rig.switcher.switchTo(EMAIL.B, null, Infinity, null, options);
+    assert.equal(result.error, 'web_login_expired');
+    assert.equal(result.loginOpened, undefined);
+  }
+  const rig = makeRig({entries: [savedSession('A'), dead]});
+  await rig.switcher.switchTo(EMAIL.B);
+  assert.equal(await rig.probe(), EMAIL.A);
+  assert.ok(!rig.events.includes('browser:openLogin'));
 });
 
 test('a switch that is no longer wanted when its turn comes changes nothing', async () => {

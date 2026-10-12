@@ -166,7 +166,10 @@ function saveCurrentSession({force = false} = {}) {
       const stored = {digest: await sessionDigest(entry?.cookies ?? []), savedAt: lastSessionSavedAt};
       await chrome.storage.local.set({[SAVED_SESSION_KEY]: stored}).catch(() => {});
       // Notices a sign-in this companion did not make before any catch-up runs.
-      await selections.observed(result.email).catch(() => {});
+      const before = (await selections.current().catch(() => null))?.identity;
+      const after = (await selections.observed(result.email).catch(() => null))?.identity;
+      // A new login may be the one a Code switch is waiting for, e.g. after an expired login.
+      if (after && after !== before) void runCatchUp({signedIn: true});
       return result;
     } catch (error) {
       report({error: 'session_save_failed', failureStep: 'save_session', ...probe.diagnostic});
@@ -180,9 +183,17 @@ function saveCurrentSession({force = false} = {}) {
 // A selection made while this profile was closed, or one it failed to keep,
 // takes effect when it reconnects. One the user overrode afterwards, by signing
 // in to another account or by a Chrome-only switch, never does.
-async function catchUp() {
+// `signedIn`: a new login was just saved here. When it is the account Code selected, this
+// profile has finished that selection by hand, so the companion can call the switch done.
+async function catchUp({signedIn = false} = {}) {
   const {email, selectedAt} = await native('pending_selection', {perProfile: true});
   if (!email || !Number.isFinite(selectedAt)) return;
+  if (signedIn && await switcher.identity() === email) {
+    await selections.switched(email, selectedAt);
+    knownStatus = {...knownStatus, email};
+    void native('browser_ready', {email, selectedAt}).catch(() => {});
+    return;
+  }
   if (selectedAt < (await selections.current()).appliedAt) return;
   // A sign-in since the last save counts too, even if that save failed.
   const current = await switcher.identity();
@@ -216,14 +227,23 @@ async function catchUp() {
   knownStatus = {...knownStatus, email};
   void native('browser_ready', {email, selectedAt}).catch(() => {});
 }
-async function runCatchUp() {
-  catchUpDue = false;
-  try {
-    await catchUp();
-  } catch {
-    // For example, a switch was still running when this profile connected.
-    catchUpDue = true;
-  }
+// One catch-up at a time. A plain request joins one already running; one after a
+// sign-in waits its turn, so the new login is always checked.
+let catchUpRun = null;
+function runCatchUp(options = {}) {
+  if (catchUpRun && !options.signedIn) return catchUpRun;
+  const run = (catchUpRun ?? Promise.resolve()).then(async () => {
+    catchUpDue = false;
+    try {
+      await catchUp(options);
+    } catch {
+      // For example, a switch was still running when this profile connected.
+      catchUpDue = true;
+    }
+  });
+  catchUpRun = run;
+  void run.finally(() => { if (catchUpRun === run) catchUpRun = null; });
+  return run;
 }
 // Chrome keeps running an unpacked extension's old code after the app updates its
 // files. Reload once when the manifest on disk names another version, so nobody
@@ -273,7 +293,10 @@ async function handleCommand(message) {
     if (popupSwitchInProgress) return {ok: false, error: 'switch_in_progress'};
     commandSwitches++;
     try {
-      const result = await switcher.switchTo(message.email, null, message.expiresAt);
+      const result = await switcher.switchTo(message.email, null, message.expiresAt, null,
+        {openLogin: message.openLogin === true});
+      // Whatever the user signs in to next must not be undone by an older selection.
+      if (result.loginOpened) await selections.manualLogin().catch(() => {});
       if (result.ok) {
         knownStatus = {...knownStatus, email: result.email};
         // Rollbacks carry no selectedAt and leave a missed selection pending.

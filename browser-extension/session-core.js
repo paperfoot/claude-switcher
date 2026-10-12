@@ -125,12 +125,17 @@ export class SessionSwitcher {
     const entry = await this.capture(); await this.vault.put(entry); onSaved?.(entry); return {ok:true,email:entry.email};
   }); }
   newLogin() { return this.serialize(async () => {
+    await this.openLogin();
+    return {ok:true};
+  }); }
+  // Callers hold the serialized section. A current login that cannot be saved stops
+  // this before anything is cleared, so no working login is ever lost.
+  async openLogin() {
     if (await this.probe()) await this.vault.put(await this.capture());
     // Clear locally, without calling Claude's logout endpoint and revoking a saved session.
     await this.browser.clear();
     await this.browser.openLogin();
-    return {ok:true};
-  }); }
+  }
   status() { return this.serialize(async () => {
     const email = await this.probe();
     // A vault may also report when each saved login expires, in Unix seconds.
@@ -142,7 +147,16 @@ export class SessionSwitcher {
   identity() { return this.serialize(() => this.probe()); }
   // `stillWanted` runs first inside the serialized section, so a switch queued ahead of
   // this one can cancel it instead of being overwritten by it.
-  switchTo(email, activateCode = null, expiresAt = Infinity, stillWanted = null) { return this.serialize(async () => {
+  // `openLogin` is for a switch the user just chose: when the target's saved login is
+  // missing or dead, Chrome is left at claude.ai/login so one sign-in finishes the switch.
+  // The previous login is saved first and only cleared locally, never revoked.
+  switchTo(email, activateCode = null, expiresAt = Infinity, stillWanted = null, {openLogin = false} = {}) { return this.serialize(async () => {
+    const result = await this.attemptSwitch(email, activateCode, expiresAt, stillWanted);
+    if (!openLogin || !['web_login_expired', 'web_login_needed'].includes(result.error)) return result;
+    try { await this.openLogin(); } catch { return result; }
+    return {...result, loginOpened:true};
+  }); }
+  async attemptSwitch(email, activateCode, expiresAt, stillWanted) {
     const expired = () => Date.now() >= expiresAt;
     if (expired()) return {ok:false,error:'browser_timeout',email};
     if (stillWanted && !(await stillWanted())) return {ok:false,error:'selection_changed',email};
@@ -218,5 +232,5 @@ export class SessionSwitcher {
     await this.browser.refresh(target.url);
     if (activation?.partial) return {...activation, email};
     return {ok:true,email};
-  }); }
+  }
 }

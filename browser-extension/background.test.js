@@ -296,6 +296,8 @@ async function makeHarness({
       return EMAIL[key] ?? null;
     },
     jar: () => clone(jar),
+    // A sign-in or sign-out in Chrome that the extension has not seen yet.
+    setCookies(next) { jar = clone(next); },
     officialCalls,
     reloads,
     official: () => official,
@@ -656,6 +658,63 @@ for (const [state, target] of [
     assert.deepEqual(harness.jar(), current);
     assert.equal(harness.currentEmail(), EMAIL.A);
     assert.equal(harness.nativeRequests.some(message => message.action === 'browser_ready'), false);
+  });
+}
+
+const deadB = () => savedSession('B', {cookies: [sessionCookie('B', {session: false, expirationDate: 1})]});
+
+test('a menu switch with openLogin to a dead login saves the current one and opens sign-in', async () => {
+  const harness = await makeHarness({entries: [savedSession('A'), deadB()]});
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+
+  const reply = await harness.sendMenu({id: 'login', command: 'switch', email: EMAIL.B, openLogin: true});
+  assert.equal(reply.result.error, 'web_login_expired');
+  assert.equal(reply.result.loginOpened, true);
+  assert.equal(harness.currentEmail(), null);
+  assert.equal(harness.tabs[0].url, 'https://claude.ai/login');
+  assert.ok(harness.requested('vault_put').some(message => message.entry.email === EMAIL.A));
+});
+
+test('a menu switch without openLogin to a dead login keeps the current account', async () => {
+  const harness = await makeHarness({entries: [savedSession('A'), deadB()]});
+  await harness.waitForNative('pending_selection');
+  await harness.flush();
+
+  const reply = await harness.sendMenu({id: 'plain', command: 'switch', email: EMAIL.B});
+  assert.equal(reply.result.error, 'web_login_expired');
+  assert.equal(reply.result.loginOpened, undefined);
+  assert.equal(harness.currentEmail(), EMAIL.A);
+  assert.equal(harness.tabs[0].url, 'https://claude.ai/chat');
+});
+
+for (const [account, finishes] of [['B', true], ['C', false]]) {
+  test(`a manual sign-in to ${finishes ? 'the selected account finishes' : 'another account leaves'} the pending switch`, async () => {
+    const selectedAt = nowSeconds() - 60;
+    const storage = {selection: {appliedAt: nowSeconds() - 600, identity: sha256Hex(EMAIL.A)}};
+    // The menu switch to B already failed: nothing is pending for this profile at connect.
+    const harness = await makeHarness({
+      entries: [savedSession('A'), deadB(), savedSession('C')], storage,
+      pendingResults: [{ok: true, email: null, selectedAt: null}], pendingEmail: EMAIL.B, pendingSelectedAt: selectedAt,
+    });
+    await harness.waitForNative('pending_selection');
+    await harness.settle();
+
+    harness.setCookies([sessionCookie(account)]);
+    await harness.sendPopup({action: 'save'});
+    await harness.settle();
+
+    const ready = harness.requested('browser_ready');
+    assert.equal(harness.currentEmail(), EMAIL[account]);
+    assert.equal(harness.requested('vault_get').length, 0, 'no saved login was restored');
+    if (finishes) {
+      assert.equal(ready.length, 1);
+      assert.equal(ready[0].email, EMAIL.B);
+      assert.equal(ready[0].selectedAt, selectedAt);
+      assert.equal(storage.selection.identity, sha256Hex(EMAIL.B));
+    } else {
+      assert.equal(ready.length, 0);
+    }
   });
 }
 
