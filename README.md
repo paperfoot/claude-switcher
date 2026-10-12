@@ -1,12 +1,31 @@
-# Claude & Codex Switcher
+<div align="center">
 
-Switch Claude (Chrome and Claude Code) and Codex accounts from one command palette, and see five-hour and weekly usage at a glance.
+<img src="assets/brand/logo.png" width="760" alt="Claude Switcher">
 
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#install)
-[![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://www.swift.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+### One palette for every Claude and Codex account
 
-A small native menu bar app for Macs with more than one Claude or Codex subscription. Pick a Claude account and both Claude.ai in Chrome and Claude Code use it. Pick a Codex account and the Codex app reopens with it.
+Switch Claude.ai in Chrome, Claude Code, Claude in Chrome and the Codex app together, and see five-hour and weekly usage at a glance.
+
+<br />
+
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/claude-switcher?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/claude-switcher/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+<br />
+
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](#install)
+[![Swift 6](https://img.shields.io/badge/Swift-6-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://www.swift.org)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-Ready-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://code.claude.com/docs/en/overview)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+
+[Quick start](#quick-start) · [Use it](#use-it) · [Auto-switch](#switch-automatically-near-a-limit) · [Install](#install) · [Troubleshooting](#troubleshooting)
+
+</div>
+
+---
+
+A small native menu bar app for Macs with more than one Claude or Codex subscription. Pick a Claude account and Claude.ai in Chrome, Claude Code and the Claude in Chrome extension your agents use all move to it. Pick a Codex account and the Codex app reopens with it.
 
 <p align="center">
   <img src="assets/palette-light.png" width="640" alt="The command palette before typing: accounts ranked by headroom with their five-hour and weekly usage, then Add account and Auto-switch">
