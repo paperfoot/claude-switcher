@@ -1,4 +1,4 @@
-import {SessionSwitcher, SelectionMemory, failure, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js';
+import {SessionSwitcher, SelectionMemory, failure, identityFrom, claudeCookie, browserScopedCookie} from './session-core.js'; import {OfficialFollower} from './official-extension.js';
 const HOST = 'org.paperfoot.claude_switcher';
 // A catch-up switch has no waiting caller; bound it like a menu switch.
 const CATCH_UP_MS = 120_000;
@@ -109,6 +109,16 @@ const vault={
   }
 };
 const switcher=new SessionSwitcher(browser,vault,probe);
+// Created on the first command, so a profile that never follows Anthropic's
+// extension never registers anything against it.
+let officialFollower;
+function official() {
+  officialFollower ??= new OfficialFollower({
+    management: chrome.management, windows: chrome.windows, tabs: chrome.tabs,
+    scripting: chrome.scripting, identity: () => switcher.identity(),
+  });
+  return officialFollower;
+}
 async function digest(text) {
   const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
   return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
@@ -250,6 +260,12 @@ async function handleCommand(message) {
       commandSwitches--;
     }
   }
+  if (message.command === 'official_prepare') {
+    if (switching()) return {ok: false, error: 'switch_in_progress'};
+    return official().prepare(message.email);
+  }
+  // Only closes the window it opened and reports, so it may run during a switch.
+  if (message.command === 'official_finish') return official().finish();
   // A status probe queued behind a running switch would miss the coordinator's
   // short wait and only report a login in flux. Answer with the committed state.
   if (switching()) {
@@ -345,6 +361,9 @@ chrome.cookies.onChanged.addListener(change=>{
   if(sessionSaveInFlight || probesInFlight || incomingCommands || popupSwitchInProgress)return;
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>{void saveCurrentSession().catch(()=>{});},1500);
+});
+chrome.tabs?.onUpdated?.addListener((tabId, change, tab) => {
+  if (officialFollower) void officialFollower.onTabUpdated(tabId, change, tab).catch(() => {});
 });
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
