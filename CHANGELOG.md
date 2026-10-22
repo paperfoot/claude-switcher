@@ -4,6 +4,7 @@ User-visible changes, newest first. From 0.6.1 on, version numbers belong to thi
 
 ## Unreleased
 
+- Auto-switch is now semi-manual. An account you pick yourself stays for at least an hour, and nothing moves you while a Claude session is using Claude in Chrome or computer use, since a switch signs Claude in Chrome out and breaks the run. Early moves to spend quota before it resets happen only when it would otherwise expire: a weekly reset within six hours, or within an hour per percent left. Running out still moves you.
 - The account engine that saves, switches and auto-switches Claude Code logins is now part of Claude Switcher instead of a separate `claude-swap` install. It began as claude-swap 0.26.0 and runs from the app on Python's standard library alone, with no third-party packages, so setup no longer needs `uv tool install claude-swap`. Saved accounts stay where they were and carry over untouched.
 - Chrome no longer replays a known-dead saved login every time it reconnects after an automatic switch. That replay held up every other Chrome request for 10 to 35 seconds, so switches reported Chrome as not responding. Choosing the account and signing in still finishes the switch. Companion 0.9.5.
 - Auto-switch no longer keeps away from an account whose five-hour window has reset since it left it, so that account's last weekly points, if they reset soonest, are used rather than expiring.

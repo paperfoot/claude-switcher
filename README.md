@@ -83,11 +83,17 @@ The menu bar menu shows every account with its usage. Click an email to switch. 
 
 ## Switch automatically near a limit
 
-Type `auto` in the palette and turn on **Auto-switch at limit**. The switcher keeps Claude Code and every connected Chrome profile on the account whose weekly limit resets soonest and still has room, so quota that is about to reset gets used instead of expiring. An account counts as spent at 98% of its five-hour or weekly limit; then the switcher moves on to the next account in reset order, so long sessions keep going.
+Type `auto` in the palette and turn on **Auto-switch at limit**. Claude Code and every connected Chrome profile stay on the account you are using until it is spent (98% of its five-hour or weekly limit by default), then move to the account whose weekly limit resets soonest and still has room, so long sessions keep going.
+
+Before that, the switcher moves early only to save quota that would otherwise expire: an account whose weekly limit resets within six hours, or within an hour per percent it has left. It never makes such an early move:
+
+- within an hour of an account you picked yourself, or
+- while any Claude session has used Claude in Chrome or computer use in the last ten minutes, because a switch signs Claude in Chrome out and breaks the run.
+
+Running out still moves you, even then: at the limit the run would stop anyway.
 
 - The decision comes from the switcher's own account engine: it refreshes the target's login first, never lands on an account that is near its own limit, and avoids switching back and forth.
 - Usage is polled at a pace Anthropic's usage endpoint accepts (roughly one request per account every few minutes, faster near the limit), so turning this on does not get accounts rate-limited.
-- It never overrides a choice you just made: there is no automatic switch in the ten minutes after you pick an account yourself.
 - Every automatic switch shows in the menu bar and in the menu, with the time.
 - Codex is never switched automatically, because a Codex switch restarts the app.
 

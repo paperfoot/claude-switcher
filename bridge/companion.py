@@ -341,20 +341,122 @@ def extension_follow(email):
 
 AUTO_THRESHOLD_RANGE = (50.0, 99.9)
 AUTO_COOLDOWN = 120
+# A switch made from the menu or palette holds for this long: optional moves wait.
+MANUAL_HOLD = 60 * 60
+# Agents driving Chrome or the computer within this window hold optional moves too:
+# a switch signs Claude in Chrome out and breaks the run.
+AGENT_TOOL_WINDOW = 10 * 60
+# Subagents write their own files; look inside sessions active this recently.
+AGENT_SESSION_WINDOW = 2 * 60 * 60
+AGENT_TOOLS = ('"name":"mcp__claude-in-chrome__', '"name":"mcp__computer-use__')
+TRANSCRIPT_TAIL = 512 * 1024
 
 
-def auto_events(threshold, timeout):
+def transcript_roots():
+    """Where Claude Code sessions write transcripts: ~/.claude and each profile's own directory."""
+    roots = [Path.home() / '.claude' / 'projects']
+    try:
+        profiles = json.loads((BASE / 'config.json').read_text()).get('profiles') or []
+    except (OSError, ValueError, AttributeError):
+        profiles = []
+    for profile in profiles:
+        directory = profile.get('credDir') if isinstance(profile, dict) else None
+        if isinstance(directory, str) and directory:
+            roots.append(Path(directory).expanduser() / 'projects')
+    return [root for root in dict.fromkeys(roots) if root.is_dir()]
+
+
+def recent_transcripts(now):
+    """Session and subagent transcripts written within AGENT_TOOL_WINDOW. Only session
+    files are listed for every project; subagent folders only for live sessions."""
+    found = []
+    for root in transcript_roots():
+        try:
+            projects = [entry.path for entry in os.scandir(root) if entry.is_dir()]
+        except OSError:
+            continue
+        for project in projects:
+            try:
+                sessions = [entry for entry in os.scandir(project) if entry.name.endswith('.jsonl')]
+            except OSError:
+                continue
+            for session in sessions:
+                try:
+                    modified = session.stat().st_mtime
+                except OSError:
+                    continue
+                if modified >= now - AGENT_TOOL_WINDOW:
+                    found.append(session.path)
+                if modified >= now - AGENT_SESSION_WINDOW:
+                    subagents = Path(session.path[:-len('.jsonl')]) / 'subagents'
+                    try:
+                        found += [entry.path for entry in os.scandir(subagents)
+                                  if entry.name.endswith('.jsonl') and entry.stat().st_mtime >= now - AGENT_TOOL_WINDOW]
+                    except OSError:
+                        pass
+    return found
+
+
+def agents_driving_browser(now=None):
+    """True when a Claude session used Claude in Chrome or computer use in the last few minutes."""
+    from datetime import datetime
+    now = time.time() if now is None else now
+    for path in recent_transcripts(now):
+        try:
+            with open(path, 'rb') as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - TRANSCRIPT_TAIL))
+                tail = stream.read().decode('utf-8', 'replace')
+        except OSError:
+            continue
+        for line in reversed(tail.splitlines()):
+            if not any(tool in line for tool in AGENT_TOOLS):
+                continue
+            marker = line.find('"timestamp":"')
+            if marker < 0:
+                continue
+            stamp = line[marker + 13:line.find('"', marker + 13)]
+            try:
+                at = datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp()
+            except ValueError:
+                continue
+            if at >= now - AGENT_TOOL_WINDOW:
+                return True
+            break  # the newest such call in this file is older than the window
+    return False
+
+
+def hold_reason(now=None):
+    """Why optional moves should wait this tick: 'manual', 'agents', or None.
+
+    Leaving an account at the threshold is never held: at its limit the run breaks anyway.
+    """
+    now = time.time() if now is None else now
+    state = read_state()
+    selected_at = state.get('selectedAt')
+    if (state.get('automatic') is not True and isinstance(selected_at, (int, float))
+            and not isinstance(selected_at, bool) and 0 <= now - selected_at < MANUAL_HOLD):
+        return 'manual'
+    if agents_driving_browser(now):
+        return 'agents'
+    return None
+
+
+def auto_events(threshold, timeout, hold=False):
     """One `auto --once` engine decision as JSON events. The engine paces its own usage
     polls through its usage store, so calling this every minute stays within rate limits.
 
     consume-first moves Code to the account whose weekly window resets soonest while it
     still has room, so quota that is about to reset is spent before quota that keeps.
+    --urgent-only makes such an optional move only for quota that would otherwise expire,
+    and --hold skips optional moves altogether (see hold_reason).
     Room means usage under `threshold`, which is why the app's default sits near the limit.
     A target can arrive just under it, so the cooldown between proactive moves is two
     minutes rather than the engine's default five, or the account could run into its hard limit first.
     """
     result = subprocess.run([engine(), 'auto', '--once', '--json', '--strategy', 'consume-first',
-                             '--cooldown', str(AUTO_COOLDOWN), '--threshold', f'{threshold:g}'],
+                             '--cooldown', str(AUTO_COOLDOWN), '--threshold', f'{threshold:g}', '--urgent-only',
+                             *(['--hold'] if hold else [])],
                             env=clean_environment(), stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     # Exit 0: switched. 2: nothing to do. 3: no viable target. 1: the engine failed.
     if result.returncode not in (0, 2, 3):
@@ -397,9 +499,11 @@ def auto_tick(threshold, deadline=None, events=None):
             return {'ok': True, 'switched': False, 'reason': 'switch_in_progress'}
         previous = safe_identity(deadline)
         engine_failed = False
+        hold = None
         if events is None:
+            hold = hold_reason()
             try:
-                events = auto_events(threshold, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT))
+                events = auto_events(threshold, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT), hold=hold is not None)
             except (RuntimeError, OSError, subprocess.TimeoutExpired, deadlines.DeadlineExceeded):
                 engine_failed, events = True, []
         switch = next((event for event in events if event.get('event') == 'switch' and not event.get('dryRun')), None)
@@ -415,7 +519,7 @@ def auto_tick(threshold, deadline=None, events=None):
             if any(event.get('event') == 'all-exhausted' for event in events):
                 return {'ok': True, 'switched': False, 'reason': 'all_exhausted'}
             reason = next((str(event.get('reason')) for event in events if event.get('event') == 'no-switch'), 'no_action')
-            return {'ok': True, 'switched': False, 'reason': reason}
+            return {'ok': True, 'switched': False, 'reason': reason, **({'hold': hold} if hold else {})}
         # Code moved. Chrome follows the login Code actually has now.
         moved = {'switched': True, 'codeEmail': current, 'previousEmail': previous, 'trigger': trigger}
         try:

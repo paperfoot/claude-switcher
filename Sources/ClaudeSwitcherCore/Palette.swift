@@ -992,7 +992,7 @@ enum PaletteCatalog {
                                                 "stop": true, "resume": false, "unpause": false, "unblock": false])
         case .autoSwitch:
             return PaletteEntry(action: .toggle(toggle), name: "Auto-switch at limit",
-                                subtitle: "Spend the account that resets soonest first; leave it at \(context.autoSwitchThreshold)% of a limit",
+                                subtitle: "Use quota before it resets; never moves off your pick for an hour, or while agents use the browser",
                                 symbol: "arrow.triangle.swap",
                                 keywords: keywords(["auto": 1, "automatic": 1, "automatically": 0.9,
                                                     "autoswitch": 1, "auto-switch": 1, "limit": 1, "limits": 0.9,

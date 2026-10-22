@@ -4,9 +4,11 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from contextlib import ExitStack, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -1515,6 +1517,44 @@ class AutoTickTests(unittest.TestCase):
             result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
         self.assertEqual(result, {"ok": True, "switched": False, "reason": "switch_in_progress"})
 
+    def test_a_manual_choice_holds_for_an_hour_and_an_automatic_one_does_not(self):
+        self.base.mkdir(parents=True, exist_ok=True)
+        now = 10_000.0
+        with mock.patch.object(companion, "agents_driving_browser", return_value=False):
+            self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": now - 1800}))
+            self.assertEqual(companion.hold_reason(now), "manual")
+            self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": now - 3700}))
+            self.assertIsNone(companion.hold_reason(now))
+            self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": now - 60,
+                                              "automatic": True}))
+            self.assertIsNone(companion.hold_reason(now))
+        with mock.patch.object(companion, "agents_driving_browser", return_value=True):
+            self.assertEqual(companion.hold_reason(now), "agents")
+
+    def test_recent_browser_or_computer_use_by_any_session_is_seen(self):
+        home = Path(self.temporary.name) / "home"
+        project = home / ".claude" / "projects" / "-work"
+        (project / "s1" / "subagents").mkdir(parents=True)
+        now = time.time()
+
+        def line(tool, seconds_ago):
+            stamp = datetime.fromtimestamp(now - seconds_ago, timezone.utc).isoformat().replace("+00:00", "Z")
+            return json.dumps({"type": "assistant", "timestamp": stamp,
+                               "message": {"content": [{"type": "tool_use", "name": tool}]}},
+                              separators=(",", ":")) + "\n"
+
+        session = project / "s1.jsonl"
+        subagent = project / "s1" / "subagents" / "agent-a.jsonl"
+        with mock.patch.object(companion.Path, "home", return_value=home):
+            session.write_text(line("Bash", 30))
+            self.assertFalse(companion.agents_driving_browser(now))
+            subagent.write_text(line("mcp__claude-in-chrome__computer", 60))
+            self.assertTrue(companion.agents_driving_browser(now))
+            subagent.write_text(line("mcp__computer-use__screenshot", 3600))
+            self.assertFalse(companion.agents_driving_browser(now))
+            session.write_text(line("mcp__computer-use__left_click", 120))
+            self.assertTrue(companion.agents_driving_browser(now))
+
     def test_an_out_of_range_threshold_is_refused(self):
         for threshold in (101, 10, float("nan")):
             self.assertEqual(companion.auto_tick(threshold, events=[])["error"], "invalid_request")
@@ -1527,7 +1567,11 @@ class AutoTickTests(unittest.TestCase):
             events = companion.auto_events(95.0, timeout=30)
         self.assertEqual([event["event"] for event in events], ["poll", "no-switch"])
         self.assertEqual(run.call_args.args[0], ["/bin/cswap", "auto", "--once", "--json", "--strategy", "consume-first",
-                                                 "--cooldown", "120", "--threshold", "95"])
+                                                 "--cooldown", "120", "--threshold", "95", "--urgent-only"])
+        with mock.patch.object(companion, "configuration", return_value={"engine": "/bin/cswap"}), \
+                mock.patch.object(companion.subprocess, "run", return_value=completed) as run:
+            companion.auto_events(95.0, timeout=30, hold=True)
+        self.assertEqual(run.call_args.args[0][-1], "--hold")
         failed = types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
         with mock.patch.object(companion, "configuration", return_value={"engine": "/bin/cswap"}), \
                 mock.patch.object(companion.subprocess, "run", return_value=failed):
