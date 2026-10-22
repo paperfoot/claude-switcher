@@ -149,6 +149,12 @@ HORIZON_HEADROOM_RATIO = 2.0
 # whichever account we happen to hold.
 SPENT_HEADROOM_PCT = 3.0
 
+# `urgent_only`: an optional consume-first move is worth breaking the user's flow
+# only for quota that would otherwise expire. Spending takes time, so the horizon
+# grows with what is left: at least six hours, or an hour per point of headroom.
+URGENT_MIN_S = 6 * 3600.0
+URGENT_S_PER_PCT = 3600.0
+
 
 def _recovery_is_useful(
     candidate_recovery_ts: float,
@@ -995,6 +1001,11 @@ class AutoSwitchEngine:
                 # whichever account's weekly window resets soonest, to burn the
                 # most-perishable quota first. Candidate selection decides whether
                 # a sooner-resetting account with room actually exists.
+                if settings.hold:
+                    # The caller holds this account (a manual choice, or agents
+                    # driving the browser). Only the threshold may move it.
+                    self._emit(NoSwitchEvent(reason="held", detail="optional moves are on hold"))
+                    return TickOutcome.NO_ACTION
                 trigger = "consume-first"
             else:
                 trigger = "at-limit" if active_headroom <= 0 else "proactive"
@@ -1915,6 +1926,12 @@ class AutoSwitchEngine:
                         or reset_ts >= active_reset_ts
                     ):
                         continue
+                    if (
+                        trigger == "consume-first"
+                        and settings.urgent_only
+                        and reset_ts - now > max(URGENT_MIN_S, h * URGENT_S_PER_PCT)
+                    ):
+                        continue  # its quota keeps until later; no need to move now
                 elif active_headroom is not None:
                     # best: the candidate must beat the active account by the
                     # full hysteresis margin (a one-way move like 99%→89%

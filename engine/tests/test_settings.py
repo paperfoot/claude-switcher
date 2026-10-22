@@ -12,6 +12,7 @@ import pytest
 
 from switch_engine.exceptions import ConfigError
 from switch_engine.settings import (
+    RUN_ONLY_FIELDS,
     SETTING_SPECS,
     atomic_write_json,
     AutoSwitchSettings,
@@ -159,7 +160,7 @@ class TestSettingSpecs:
             by_section.setdefault(spec.section, set()).add(spec.field)
         assert by_section["autoswitch"] == {
             f.name for f in AutoSwitchSettings.__dataclass_fields__.values()
-        }
+        } - RUN_ONLY_FIELDS
         assert by_section["ui"] == {
             f.name for f in UiSettings.__dataclass_fields__.values()
         }

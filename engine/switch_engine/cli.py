@@ -665,6 +665,21 @@ Defaults live in settings.json in the backup root; flags override them.
         ),
     )
     parser.add_argument(
+        "--hold",
+        action="store_true",
+        default=None,
+        help="Skip optional consume-first moves this run; still leave at the threshold",
+    )
+    parser.add_argument(
+        "--urgent-only",
+        action="store_true",
+        default=None,
+        help=(
+            "With consume-first: move early only to quota that would otherwise "
+            "expire (a weekly reset within 6 h, or 1 h per point left)"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Evaluate and report, but never switch or write state",

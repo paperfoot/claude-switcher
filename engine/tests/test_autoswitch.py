@@ -6942,3 +6942,67 @@ class TestReturnBarReleasesOnceTheLeftWindowReset:
             state, usage, {"2": 2.0, "1": 50.0}, 50.0, AutoSwitchSettings(), now, "1"
         )
         assert recovered is False
+
+
+class TestHoldAndUrgentOnly:
+    """The app's per-run flags: `hold` after a manual choice or while agents drive the
+    browser, `urgent_only` so optional moves chase only quota that would expire."""
+
+    def _harness(self, temp_home: Path, **settings) -> EngineHarness:
+        # The app's cutoff, so a 96%-used account still has room to spend.
+        h = EngineHarness(temp_home, strategy="consume-first", threshold=99.0, **settings)
+        h.seed(1, "a@example.com")
+        h.seed(2, "b@example.com")
+        h.make_live("a@example.com", 1)
+        return h
+
+    def _in(self, h: EngineHarness, hours: float) -> str:
+        return _iso_at(h.clock.now + hours * 3600)
+
+    def test_hold_skips_an_optional_move(self, temp_home):
+        h = self._harness(temp_home, hold=True)
+        outcome = h.tick_with_usage({
+            "1": _usage7(20, 20, self._in(h, 200)),
+            "2": _usage7(10, 90, self._in(h, 2)),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+        assert [e.reason for e in h.events if isinstance(e, NoSwitchEvent)] == ["held"]
+
+    def test_hold_still_leaves_at_the_threshold(self, temp_home):
+        h = self._harness(temp_home, hold=True)
+        outcome = h.tick_with_usage({
+            "1": _usage7(99.5, 20, self._in(h, 200)),
+            "2": _usage7(10, 10, self._in(h, 100)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_urgent_only_lets_quota_that_keeps_wait(self, temp_home):
+        # Ten points resetting in three days: plenty of time to spend them later.
+        h = self._harness(temp_home, urgent_only=True)
+        outcome = h.tick_with_usage({
+            "1": _usage7(20, 20, self._in(h, 200)),
+            "2": _usage7(10, 90, self._in(h, 72)),
+        })
+        assert outcome is TickOutcome.NO_ACTION
+        assert h.active_number() == 1
+
+    def test_urgent_only_moves_for_quota_about_to_expire(self, temp_home):
+        h = self._harness(temp_home, urgent_only=True)
+        outcome = h.tick_with_usage({
+            "1": _usage7(20, 20, self._in(h, 200)),
+            "2": _usage7(10, 96, self._in(h, 5)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
+    def test_urgent_only_horizon_grows_with_what_is_left(self, temp_home):
+        # Thirty points need longer to spend: twenty hours out is already urgent.
+        h = self._harness(temp_home, urgent_only=True)
+        outcome = h.tick_with_usage({
+            "1": _usage7(20, 20, self._in(h, 200)),
+            "2": _usage7(10, 70, self._in(h, 20)),
+        })
+        assert outcome is TickOutcome.SWITCHED
+        assert h.active_number() == 2

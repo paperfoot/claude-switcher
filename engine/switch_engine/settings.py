@@ -57,6 +57,17 @@ class AutoSwitchSettings:
     # 5h/7d windows still have headroom. None = account-wide 5h/7d only
     # (default).
     model: str | None = None
+    # Per run only: flags from the caller, never read from or written to settings.json.
+    # hold: the account was just chosen by hand, or agents are driving the browser, so
+    # skip optional consume-first moves; leaving at the threshold still happens.
+    hold: bool = False
+    # urgent_only: an optional consume-first move only goes to quota that would expire
+    # first, a weekly reset within URGENT_MIN_S or URGENT_S_PER_PCT per point left.
+    urgent_only: bool = False
+
+
+# AutoSwitchSettings fields set per run by the caller, with no settings.json key.
+RUN_ONLY_FIELDS = frozenset({"hold", "urgent_only"})
 
 
 @dataclass(frozen=True)
@@ -435,9 +446,11 @@ def merged_with_cli(settings: AutoSwitchSettings, args) -> AutoSwitchSettings:
         value = getattr(args, attr, None)
         if value is not None:
             overrides[field] = value
-    if not overrides:
-        return settings
-    return _clamped(dataclasses.replace(settings, **overrides))
+    merged = _clamped(dataclasses.replace(settings, **overrides)) if overrides else settings
+    # Per-run flags have no settings.json spec, so they go on after clamping, which
+    # rebuilds from the specs and would drop them.
+    run_only = {field: True for field in RUN_ONLY_FIELDS if getattr(args, field, None)}
+    return dataclasses.replace(merged, **run_only) if run_only else merged
 
 
 def atomic_write_json(path: Path, data: dict) -> None:
