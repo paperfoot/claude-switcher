@@ -16,6 +16,12 @@ except ImportError:
     import deadlines
     import event_log
 
+# The account engine sits beside the bridge: Engine/ once installed, engine/ in the repository.
+ENGINE_DIR = next((path for path in (Path(__file__).resolve().parent.parent / name for name in ('Engine', 'engine'))
+                   if (path / 'switch_engine').is_dir()), None)
+if ENGINE_DIR is not None and str(ENGINE_DIR) not in sys.path:
+    sys.path.insert(0, str(ENGINE_DIR))
+
 BASE = Path.home() / '.config' / 'claude-switcher'
 SOCKET = BASE / 'browser.sock'
 STATE = BASE / 'coordinated-state.json'
@@ -664,7 +670,7 @@ def check_logins(read=None, probe=None, now=None):
     """
     now = time.time() if now is None else now
     if read is None:
-        from claude_swap import macos_keychain
+        from switch_engine import macos_keychain
         read = lambda email: macos_keychain.get_password(WEB_SERVICE, email)
     probe = probe or bootstrap_status
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -776,7 +782,7 @@ def handle_native(message):
     service = 'Paperfoot Claude Switcher Web'
     action = message.get('action')
     try:
-        from claude_swap import macos_keychain
+        from switch_engine import macos_keychain
         if action == 'vault_get':
             email = validate_email(message.get('email'))
             raw = macos_keychain.get_password(service, email)

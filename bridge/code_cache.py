@@ -28,7 +28,7 @@ def synchronize(email, *, path=None, read=None, resolve=None, lock=None):
     if not _existing(path):
         return False
     if read is None:
-        from claude_swap import macos_keychain
+        from switch_engine import macos_keychain
         read = lambda: macos_keychain.get_password('Claude Code-credentials', macos_keychain.keychain_account_name())
     raw = read()
     if not raw:
@@ -44,13 +44,13 @@ def synchronize(email, *, path=None, read=None, resolve=None, lock=None):
     if not token:
         raise CacheSyncError('oauth_missing')
     if resolve is None:
-        from claude_swap.oauth import fetch_oauth_profile
+        from switch_engine.oauth import fetch_oauth_profile
         resolve = fetch_oauth_profile
     identity = resolve(token)
     if not identity or str(identity.get('email', '')).casefold() != email.casefold():
         raise CacheSyncError('credential_identity_mismatch')
     if lock is None:
-        from claude_swap.claude_locks import claude_credentials_lock
+        from switch_engine.claude_locks import claude_credentials_lock
         # The coordinator switches the default login, regardless of its caller's shell.
         configured = os.environ.get('CLAUDE_CONFIG_DIR')
         if configured and Path(configured).expanduser() != path.parent:

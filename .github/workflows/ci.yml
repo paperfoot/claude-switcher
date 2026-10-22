@@ -23,11 +23,11 @@ jobs:
         run: node --test browser-extension/*.test.js
       - name: Desktop history tests
         run: node --test history/*.test.mjs
-      - name: Native bridge and coordinator tests
-        run: python3 -m unittest discover -s bridge -p 'test_*.py'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Native bridge and coordinator tests
+        run: python3 -m unittest discover -s bridge -p 'test_*.py'
       - name: Account engine tests
         working-directory: engine
         run: |

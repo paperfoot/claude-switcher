@@ -77,9 +77,9 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(kwargs, expected)
 
     def handle_native(self, message, keychain=None):
-        fake_claude_swap = types.ModuleType("claude_swap")
-        fake_claude_swap.macos_keychain = keychain or mock.Mock()
-        with mock.patch.dict(sys.modules, {"claude_swap": fake_claude_swap}):
+        fake_engine = types.ModuleType("switch_engine")
+        fake_engine.macos_keychain = keychain or mock.Mock()
+        with mock.patch.dict(sys.modules, {"switch_engine": fake_engine}):
             return companion.handle_native(message)
 
     def test_restorable_web_entry_filters_unrestorable_cookies_without_mutating_source(self):
@@ -1010,7 +1010,7 @@ class CompanionTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
 
     def test_connection_ping_does_not_access_credentials_or_accounts(self):
-        with mock.patch.dict(sys.modules, {'claude_swap': None}):
+        with mock.patch.dict(sys.modules, {'switch_engine': None}):
             self.assertEqual(companion.handle_native({'action': 'ping'}), {'ok': True})
         self.code_identity.assert_not_called()
         self.switch_code.assert_not_called()
@@ -1137,7 +1137,7 @@ class CompanionTests(unittest.TestCase):
         with mock.patch.object(companion, "select_account", side_effect=RuntimeError("boom")):
             self.assert_code(self.handle_native({"action": "select", "email": TARGET_EMAIL}),
                              "backend_unavailable")
-        with mock.patch.dict(sys.modules, {"claude_swap": None}):
+        with mock.patch.dict(sys.modules, {"switch_engine": None}):
             self.assert_code(companion.handle_native({"action": "vault_list"}), "backend_unavailable")
         logged = [event["error"] for event in companion.event_log.recent(self.base)]
         self.assertIn("keychain_unavailable", logged)
@@ -1340,7 +1340,7 @@ class DeadlineCoordinatorTests(unittest.TestCase):
         self.assertEqual(events[-1]["error"], "code_cache_sync_skipped")
 
     def test_popup_selection_uses_the_extension_deadline_within_bounds(self):
-        fake_swap = types.ModuleType("claude_swap")
+        fake_swap = types.ModuleType("switch_engine")
         fake_swap.macos_keychain = mock.Mock()
         cases = (
             (90, 90),
@@ -1357,7 +1357,7 @@ class DeadlineCoordinatorTests(unittest.TestCase):
                 elif offset is not None:
                     message["deadline"] = offset
                 with (
-                    mock.patch.dict(sys.modules, {"claude_swap": fake_swap}),
+                    mock.patch.dict(sys.modules, {"switch_engine": fake_swap}),
                     mock.patch.object(companion, "select_account", return_value={"ok": True}) as select,
                 ):
                     companion.handle_native(message)
@@ -1384,7 +1384,7 @@ if __name__ == "__main__":
 
 
 class AutoTickTests(unittest.TestCase):
-    """One claude-swap auto-switch decision, with Chrome following any Code switch."""
+    """One engine auto-switch decision, with Chrome following any Code switch."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
