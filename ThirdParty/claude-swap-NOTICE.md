@@ -9,4 +9,5 @@ Local changes:
 - The package is `switch_engine` and runs as `claude-switcher-engine`, from the app bundle, on the standard library alone. Saved accounts, Keychain items and settings keep claude-swap's locations and names, so an existing claude-swap store carries over untouched.
 - Removed: the Textual dashboard (`tui`), the rumps menu-bar app and its launch agent, export and import, self-upgrade and the update check, and terminal theme detection. With them go the `textual` and `rumps` dependencies.
 - `truststore` is replaced by `system_trust.py`, which adds the macOS system root certificates to Python's default HTTPS context through `/usr/bin/security`.
+- Auto-switch's return bar releases once the window that bound the account at departure has reset, so a few weekly points that reset soonest are spent instead of expiring.
 - The test suite keeps every upstream test for the code that remains; it needs only `pytest`.

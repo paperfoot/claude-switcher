@@ -6895,3 +6895,50 @@ class TestFreshenRoutesThroughGate:
         assert "called" not in direct, "freshen must not POST outside the gate"
 
 
+
+class TestReturnBarReleasesOnceTheLeftWindowReset:
+    """The account we left was bound by a window that has reset since.
+
+    Seen in review: leave B at 98% five-hour / 96% weekly. Its five-hour window
+    rolls over two hours later, so B now has its last weekly points, which
+    reset soonest -- yet its headroom rose only 2 -> 4 points, short of the
+    SPENT_HEADROOM_PCT step the self-improvement leg wants, and its binding
+    reset moved FURTHER out (now the weekly one), so the recovery leg holds
+    too. Consume-first then kept burning a later-resetting account while B's
+    points expired. A rolled-over binding window is a real event, not burn on
+    the active, so it releases the bar.
+    """
+
+    def _engine(self):
+        from switch_engine.autoswitch import AutoSwitchEngine
+
+        class Fake(AutoSwitchEngine):
+            def __init__(self):
+                self._models = ()
+
+        return Fake()
+
+    def test_a_reset_binding_window_releases(self):
+        from switch_engine.settings import AutoSwitchSettings
+
+        now = 1_000_000.0
+        left_reset = now - 600  # B's five-hour window rolled over ten minutes ago
+        state = {"lastSwitchFrom": "2", "leftHeadroom": 2.0, "leftRecoveryAt": left_reset,
+                 "leftTrigger": "consume-first"}
+        usage = {"2": _usage7(10.0, 96.0, _iso_at(now + 2 * 3600)), "1": _usage7(20.0, 50.0, _iso_at(now + 5 * 86400))}
+        recovered = self._engine()._left_account_recovered(
+            state, usage, {"2": 4.0, "1": 50.0}, 50.0, AutoSwitchSettings(), now, "1"
+        )
+        assert recovered is True
+
+    def test_a_window_still_running_keeps_the_bar(self):
+        from switch_engine.settings import AutoSwitchSettings
+
+        now = 1_000_000.0
+        state = {"lastSwitchFrom": "2", "leftHeadroom": 2.0, "leftRecoveryAt": now + 3600,
+                 "leftTrigger": "consume-first"}
+        usage = {"2": _usage7(98.0, 96.0, _iso_at(now + 2 * 3600)), "1": _usage7(20.0, 50.0, _iso_at(now + 5 * 86400))}
+        recovered = self._engine()._left_account_recovered(
+            state, usage, {"2": 2.0, "1": 50.0}, 50.0, AutoSwitchSettings(), now, "1"
+        )
+        assert recovered is False

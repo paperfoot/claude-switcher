@@ -1743,6 +1743,14 @@ class AutoSwitchEngine:
             and h >= min(left_headroom + SPENT_HEADROOM_PCT, 100.0)
         ):
             return True
+        # The window that bound the account when we left has rolled over since.
+        # That is a real event, never burn on the active, and the account it
+        # leaves behind is a different proposition: often a few weekly points
+        # that reset soonest, which the two legs above miss because headroom
+        # rose by less than SPENT_HEADROOM_PCT and the binding reset moved
+        # further out. The ranking still decides whether it is worth a move.
+        if isinstance(left_recovery, (int, float)) and now >= left_recovery:
+            return True
         # `None` is the JSON-safe spelling of "unknown or already past", which
         # `_binding_recovery_ts` returns as `inf`: an account nobody can
         # schedule around. Moving off it onto a real reset IS the improvement.
