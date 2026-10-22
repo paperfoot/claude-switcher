@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var selectedEmailOverride: String?
     /// Shown under the Claude accounts while a saved Chrome login is about to expire.
     private var loginWarning: String?
+    /// Lowercased emails whose saved Chrome login has expired or expires within days.
+    private var chromeSignInEmails: Set<String> = []
     /// Automatic switching waits after a manual choice, so it never overrides one at once.
     private var lastManualSwitch: Date = .distantPast
     private var usageRefreshTimer: Timer?
@@ -264,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switching: isSwitchingAccount || desktopHistory?.busy == true,
             switchMessage: switchMessage,
             loginWarning: loginWarning,
+            chromeSignInEmails: chromeSignInEmails,
             historyEnabled: desktopHistory?.enabled ?? false,
             historyBusy: desktopHistory?.busy ?? false,
             historyMessage: desktopHistory?.message
@@ -486,8 +489,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 coordinatedSnapshot = result
                 selectedEmailOverride = nil
                 let now = Date()
-                loginWarning = Self.loginWarning(browser: result.browser,
-                                                 emails: config.profiles.compactMap(\.expectedEmail), now: now)
+                let due = Self.chromeLoginsDue(browser: result.browser,
+                                               emails: config.profiles.compactMap(\.expectedEmail), now: now)
+                loginWarning = Self.loginWarning(due, now: now)
+                chromeSignInEmails = Set(due.map { $0.email.lowercased() })
                 for profile in config.profiles {
                     guard let email = profile.expectedEmail,
                           let row = result.accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { continue }
@@ -507,15 +512,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Saved Chrome logins expire on their own; warn three days ahead, so a switch never
     /// lands on a dead session.
-    private static func loginWarning(browser: CoordinatedSnapshot.Browser, emails: [String], now: Date) -> String? {
-        let soon = emails.compactMap { email -> (email: String, expiry: Date)? in
+    private static func chromeLoginsDue(browser: CoordinatedSnapshot.Browser, emails: [String],
+                                        now: Date) -> [(email: String, expiry: Date)] {
+        emails.compactMap { email -> (email: String, expiry: Date)? in
             guard let expiry = browser.loginExpiry(email: email),
                   expiry < now.addingTimeInterval(3 * 86_400) else { return nil }
             return (email, expiry)
         }.sorted { $0.expiry < $1.expiry }
+    }
+
+    private static func loginWarning(_ soon: [(email: String, expiry: Date)], now: Date) -> String? {
         guard let first = soon.first else { return nil }
         // Choosing the account opens claude.ai's sign-in page, and signing in finishes the switch.
-        if soon.count > 1 { return "\(soon.count) Chrome logins need a fresh sign-in · choose one to sign in" }
+        // Each of them carries a badge in its row.
+        if soon.count > 1 { return "\(soon.count) Chrome logins need a fresh sign-in · choose a marked account" }
         let when = first.expiry <= now ? "has expired" : "expires \(MenuBuilder.clock(first.expiry, now: now))"
         return "Chrome login for \(first.email) \(when) · choose it to sign in again"
     }

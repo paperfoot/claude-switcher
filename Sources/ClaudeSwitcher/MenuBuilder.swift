@@ -70,6 +70,8 @@ enum MenuBuilder {
         var switchMessage: String?
         /// A saved Chrome login that has expired or expires within days.
         var loginWarning: String?
+        /// Lowercased emails whose saved Chrome login needs a fresh sign-in.
+        var chromeSignInEmails: Set<String> = []
         var historyEnabled = false
         var historyBusy = false
         var historyMessage: String?
@@ -94,6 +96,11 @@ enum MenuBuilder {
                 item.state = profile.expectedEmail?.caseInsensitiveCompare(input.selectedEmail ?? "") == .orderedSame ? .on : .off
                 item.isEnabled = !input.switching && !input.codexBusy
                 item.toolTip = "Use this account in Chrome and the next Claude Code session."
+                if item.badge == nil, let email = profile.expectedEmail,
+                   input.chromeSignInEmails.contains(email.lowercased()) {
+                    item.badge = NSMenuItemBadge(string: "Chrome sign-in")
+                    item.toolTip = "Chrome's saved login for this account has expired. Choose it to sign in to claude.ai once; the switch then finishes by itself."
+                }
             }
             menu.addItem(item)
             menu.addItem(liveUsageItem(profile: profile, status: input.accountStatuses[profile.id],
