@@ -1,0 +1,15 @@
+"""Run Claude Switcher's account engine from wherever this file is installed.
+
+Launched as `python3 -I claude-switcher-engine <command>`: isolated mode ignores
+PYTHON* variables and the user's site-packages, so only the standard library and
+the engine next to this file are importable.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from switch_engine.cli import main  # noqa: E402
+
+main()
