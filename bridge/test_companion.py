@@ -734,7 +734,7 @@ class CompanionTests(unittest.TestCase):
             second = self.per_profile_selection()
             legacy = self.handle_native({"action": "pending_selection"})
 
-        expected = {"ok": True, "email": TARGET_EMAIL, "selectedAt": 1234.5}
+        expected = {"ok": True, "email": TARGET_EMAIL, "selectedAt": 1234.5, "unfinished": False}
         self.assertEqual(first, expected)
         self.assertEqual(ready, {"ok": True})
         self.assertTrue(json.loads(self.state.read_text())["browserReady"])
@@ -752,7 +752,7 @@ class CompanionTests(unittest.TestCase):
         self.code_identity.return_value = TARGET_EMAIL
         with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
             self.assertEqual(self.per_profile_selection(),
-                             {"ok": True, "email": TARGET_EMAIL, "selectedAt": 99.0})
+                             {"ok": True, "email": TARGET_EMAIL, "selectedAt": 99.0, "unfinished": True})
             with mock.patch.object(companion, "spawn_extension_follow", autospec=True) as follow:
                 ready = self.handle_native(
                     {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 99.0})
@@ -1452,6 +1452,18 @@ class AutoTickTests(unittest.TestCase):
         self.assertIsInstance(state["selectedAt"], float)
         # The app matches a later Chrome catch-up against this selection.
         self.assertEqual(result["selectedAt"], state["selectedAt"])
+
+    def test_a_known_dead_chrome_login_is_not_restored_but_code_still_moves(self):
+        self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]
+        self.base.mkdir(parents=True, exist_ok=True)
+        (self.base / "web-accounts-meta.json").write_text(json.dumps({"expiries": {TARGET_EMAIL: 1.0}}))
+        result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
+        self.browser_request.assert_not_called()
+        self.assertTrue(result["switched"])
+        self.assertEqual(result["browserError"], "web_login_expired")
+        state = self.stored_state()
+        self.assertTrue(state["partial"])
+        self.assertEqual(state["browserError"], "web_login_expired")
 
     def test_closed_chrome_still_records_a_selection_to_catch_up_on(self):
         self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]

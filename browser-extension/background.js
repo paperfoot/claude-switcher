@@ -186,7 +186,7 @@ function saveCurrentSession({force = false} = {}) {
 // `signedIn`: a new login was just saved here. When it is the account Code selected, this
 // profile has finished that selection by hand, so the companion can call the switch done.
 async function catchUp({signedIn = false} = {}) {
-  const {email, selectedAt} = await native('pending_selection', {perProfile: true});
+  const {email, selectedAt, unfinished} = await native('pending_selection', {perProfile: true});
   if (!email || !Number.isFinite(selectedAt)) return;
   if (signedIn && await switcher.identity() === email) {
     await selections.switched(email, selectedAt);
@@ -205,6 +205,9 @@ async function catchUp({signedIn = false} = {}) {
   // would have moved appliedAt past it.
   if (current === email) {
     if (selectedAt > appliedAt) await selections.switched(email, selectedAt);
+    // The companion still counts the switch unfinished: an earlier acknowledgement was
+    // lost or refused while a switch held the lock. Acknowledge again.
+    if (unfinished === true) void native('browser_ready', {email, selectedAt}).catch(() => {});
     return;
   }
   // A popup or menu switch queued while this ran wins: it changes the record.

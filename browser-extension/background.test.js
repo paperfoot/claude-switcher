@@ -93,6 +93,7 @@ async function makeHarness({
   entries = [savedSession('A'), savedSession('B'), savedSession('C')],
   pendingEmail = null,
   pendingSelectedAt = nowSeconds() - 60,
+  pendingUnfinished = false,
   pendingResults = null,
   selectResult = null,
   nativeOverrides = {},
@@ -148,7 +149,8 @@ async function makeHarness({
         return {ok: true, accounts: [...vault.values()].map(clone)};
       case 'pending_selection':
         if (pendingResults?.length) return pendingResults.shift();
-        return {ok: true, email: pendingEmail, selectedAt: pendingEmail ? pendingSelectedAt : null};
+        return {ok: true, email: pendingEmail, selectedAt: pendingEmail ? pendingSelectedAt : null,
+                unfinished: pendingEmail ? pendingUnfinished : undefined};
       case 'select':
         return selectResult ?? {ok: true, email: message.email};
       case 'browser_ready':
@@ -383,6 +385,16 @@ test('a profile closed during a switch catches up once when it opens', async () 
   await restarted.settle();
   assert.equal(restarted.requested('vault_get').length, 0);
   assert.equal(restarted.requested('browser_ready').length, 0);
+});
+
+test('a profile already on the selection acknowledges again while the switch is unfinished', async () => {
+  const selectedAt = nowSeconds() - 60;
+  const storage = {selection: {appliedAt: selectedAt, identity: sha256Hex(EMAIL.B)}};
+  const harness = await makeHarness({initialCookies: [sessionCookie('B')], pendingEmail: EMAIL.B,
+                                     pendingSelectedAt: selectedAt, pendingUnfinished: true, storage});
+  const ready = await harness.waitForNative('browser_ready');
+  assert.equal(ready.selectedAt, selectedAt);
+  assert.equal(harness.requested('vault_get').length, 0);
 });
 
 test('every profile catches up on its own; one catching up does not hide it from another', async () => {

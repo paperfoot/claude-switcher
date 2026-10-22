@@ -412,7 +412,12 @@ def auto_tick(threshold, deadline=None, events=None):
             refresh_code_cache(email)
         selected_at = time.time()
         try:
-            web = browser_request('switch', email, deadline=deadline, selected_at=selected_at)
+            # A login claude.ai already revoked would only be restored, probed and rolled back.
+            # Code still moves; a sign-in from the menu finishes Chrome later.
+            if read_expiries().get(email, math.inf) <= selected_at:
+                web = {'ok': False, 'error': 'web_login_expired'}
+            else:
+                web = browser_request('switch', email, deadline=deadline, selected_at=selected_at)
         except FileNotFoundError:
             web = {'ok': False, 'error': 'browser_missing'}
         except (OSError, TimeoutError, ValueError, deadlines.DeadlineExceeded):
@@ -475,7 +480,8 @@ def current_selection():
                and math.isfinite(selected_at))
     if (code_switched and stamped and isinstance(email, str)
             and email in configured_emails() and code_identity() == email):
-        return {'email': email, 'selectedAt': selected_at}
+        # Unfinished: a profile that already has this account still owes its acknowledgement.
+        return {'email': email, 'selectedAt': selected_at, 'unfinished': state.get('ok') is not True}
     return {'email': None, 'selectedAt': None}
 
 
