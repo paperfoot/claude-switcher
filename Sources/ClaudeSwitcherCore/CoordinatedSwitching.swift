@@ -42,6 +42,19 @@ public struct CoordinatedSetup: Codable, Sendable {
     }
 }
 
+/// "Hold this account": while the file exists, the companion runs auto-switch with --hold,
+/// so only running out moves Code. A file, so the companion reads it without the app.
+public enum HoldFlag {
+    public static var url: URL { Config.configURL.deletingLastPathComponent().appendingPathComponent("hold") }
+    public static var isOn: Bool {
+        get { FileManager.default.fileExists(atPath: url.path) }
+        set {
+            if newValue { FileManager.default.createFile(atPath: url.path, contents: Data(), attributes: [.posixPermissions: 0o600]) }
+            else { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+}
+
 public struct CoordinatedSnapshot: Decodable, Sendable {
     public struct Window: Decodable, Sendable { public let pct: Double; public let resetsAt: String? }
     public struct Usage: Decodable, Sendable { public let fiveHour: Window?; public let sevenDay: Window? }

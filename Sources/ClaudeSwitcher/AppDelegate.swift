@@ -1732,6 +1732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .unavailable: break
         }
         if coordinated { toggles[.autoSwitch] = config.autoSwitch }
+        if coordinated && config.autoSwitch { toggles[.holdAccount] = HoldFlag.isOn }
         // Same rule as the menu: only offer an install that is waiting on running profiles.
         let update = running.isEmpty || updateProgress != nil ? nil : blockedUpdate
         return PaletteContext(accounts: accounts, desktopProfiles: desktop, toggles: toggles,
@@ -1760,6 +1761,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .reopenAfterUpdate: toggleReopenAfterUpdate(nil)
             case .pauseDesktopUpdates: toggleBlockUpdates(nil)
             case .autoSwitch: toggleAutoSwitch()
+            case .holdAccount:
+                HoldFlag.isOn.toggle()
+                switchMessage = HoldFlag.isOn ? "Holding this account · auto-switch moves only when it runs out" : nil
+                rebuildIfVisible()
             }
         case .command(let command):
             switch command {

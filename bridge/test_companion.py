@@ -1530,6 +1530,8 @@ class AutoTickTests(unittest.TestCase):
             self.assertIsNone(companion.hold_reason(now))
         with mock.patch.object(companion, "agents_driving_browser", return_value=True):
             self.assertEqual(companion.hold_reason(now), "agents")
+        (self.base / "hold").touch()
+        self.assertEqual(companion.hold_reason(now), "pinned")
 
     def test_recent_browser_or_computer_use_by_any_session_is_seen(self):
         home = Path(self.temporary.name) / "home"

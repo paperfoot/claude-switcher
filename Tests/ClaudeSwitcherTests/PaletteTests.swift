@@ -21,7 +21,7 @@ private enum Fixture {
         PaletteDesktopProfile(id: "personal", label: "Personal"),
     ]
     static let toggles: [PaletteToggle: Bool] = [
-        .launchAtLogin: false, .shareHistory: true, .reopenAfterUpdate: true, .pauseDesktopUpdates: false, .autoSwitch: false,
+        .launchAtLogin: false, .shareHistory: true, .reopenAfterUpdate: true, .pauseDesktopUpdates: false, .autoSwitch: false, .holdAccount: false,
     ]
 
     static func context(accounts: [PaletteAccount] = claude + codex, toggles: [PaletteToggle: Bool] = toggles,

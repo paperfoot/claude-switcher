@@ -48,6 +48,8 @@ public enum PaletteToggle: String, Sendable, CaseIterable, Hashable {
     case launchAtLogin, shareHistory, reopenAfterUpdate, pauseDesktopUpdates
     /// Move the active Claude account to the one with the most headroom when it nears a limit.
     case autoSwitch
+    /// Keep auto-switch on the current account until released; only running out moves it.
+    case holdAccount
 }
 
 /// One-shot commands without an account argument.
@@ -998,6 +1000,13 @@ enum PaletteCatalog {
                                                     "autoswitch": 1, "auto-switch": 1, "limit": 1, "limits": 0.9,
                                                     "seamless": 1, "rotate": 1, "rotation": 0.9, "failover": 0.8]),
                                 phrases: [["auto", "switch"], ["switch", "at", "limit"]])
+        case .holdAccount:
+            return PaletteEntry(action: .toggle(toggle), name: "Hold this account",
+                                subtitle: "Auto-switch stays on the current account until you release it or it runs out",
+                                symbol: "pin",
+                                keywords: keywords(["hold": 1, "keep": 0.9, "stay": 0.9, "stick": 0.8, "release": 0.8]),
+                                phrases: [["hold", "account"], ["stay", "on"], ["keep", "account"]],
+                                impliedStates: ["hold": true, "keep": true, "stay": true, "release": false])
         }
     }
 

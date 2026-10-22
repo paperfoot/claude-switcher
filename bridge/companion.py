@@ -427,11 +427,13 @@ def agents_driving_browser(now=None):
 
 
 def hold_reason(now=None):
-    """Why optional moves should wait this tick: 'manual', 'agents', or None.
+    """Why optional moves should wait this tick: 'pinned', 'manual', 'agents', or None.
 
     Leaving an account at the threshold is never held: at its limit the run breaks anyway.
     """
     now = time.time() if now is None else now
+    if (BASE / 'hold').exists():
+        return 'pinned'  # "Hold this account" in the palette
     state = read_state()
     selected_at = state.get('selectedAt')
     if (state.get('automatic') is not True and isinstance(selected_at, (int, float))

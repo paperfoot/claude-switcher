@@ -204,7 +204,9 @@ public struct JevRouter: Sendable {
         case .reopenAfterUpdate: return "Desktop profiles open again after Claude Desktop updates itself"
         case .pauseDesktopUpdates: return "Claude Desktop does not update itself"
         case .autoSwitch:
-            return "Claude moves to the account with the most headroom when the active one reaches \(PaletteEngine.limitPercent)% of a limit"
+            return "Claude uses quota before it resets and moves on when the active account reaches \(PaletteEngine.limitPercent)% of a limit"
+        case .holdAccount:
+            return "Automatic switching keeps Claude on the current account until it runs out"
         }
     }
 
