@@ -496,7 +496,9 @@ def current_selection():
     if (code_switched and stamped and isinstance(email, str)
             and email in configured_emails() and code_identity() == email):
         # Unfinished: a profile that already has this account still owes its acknowledgement.
-        return {'email': email, 'selectedAt': selected_at, 'unfinished': state.get('ok') is not True}
+        # loginDead: claude.ai revoked the saved login, so restoring it only probes and rolls back.
+        return {'email': email, 'selectedAt': selected_at, 'unfinished': state.get('ok') is not True,
+                'loginDead': read_expiries().get(email, math.inf) <= time.time()}
     return {'email': None, 'selectedAt': None}
 
 

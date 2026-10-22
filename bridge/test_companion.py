@@ -734,7 +734,7 @@ class CompanionTests(unittest.TestCase):
             second = self.per_profile_selection()
             legacy = self.handle_native({"action": "pending_selection"})
 
-        expected = {"ok": True, "email": TARGET_EMAIL, "selectedAt": 1234.5, "unfinished": False}
+        expected = {"ok": True, "email": TARGET_EMAIL, "selectedAt": 1234.5, "unfinished": False, "loginDead": False}
         self.assertEqual(first, expected)
         self.assertEqual(ready, {"ok": True})
         self.assertTrue(json.loads(self.state.read_text())["browserReady"])
@@ -742,6 +742,15 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(second, expected)
         # 0.7.x companions keep their one-shot behaviour.
         self.assertEqual(legacy, {"ok": True, "email": None})
+
+    def test_selection_says_when_the_saved_login_is_known_dead(self):
+        state = {"ok": False, "partial": True, "codeEmail": TARGET_EMAIL, "browserReady": False, "selectedAt": 99.0}
+        self.base.mkdir(parents=True)
+        self.state.write_text(json.dumps(state))
+        (self.base / "web-accounts-meta.json").write_text(json.dumps({"expiries": {TARGET_EMAIL: 1.0}}))
+        self.code_identity.return_value = TARGET_EMAIL
+        with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
+            self.assertTrue(self.per_profile_selection()["loginDead"])
 
     def test_selection_includes_code_switches_that_some_profiles_missed(self):
         state = {"ok": False, "partial": True, "error": "code_only_after_web_failure",
@@ -752,7 +761,7 @@ class CompanionTests(unittest.TestCase):
         self.code_identity.return_value = TARGET_EMAIL
         with mock.patch.object(companion, "configured_emails", return_value={TARGET_EMAIL}):
             self.assertEqual(self.per_profile_selection(),
-                             {"ok": True, "email": TARGET_EMAIL, "selectedAt": 99.0, "unfinished": True})
+                             {"ok": True, "email": TARGET_EMAIL, "selectedAt": 99.0, "unfinished": True, "loginDead": False})
             with mock.patch.object(companion, "spawn_extension_follow", autospec=True) as follow:
                 ready = self.handle_native(
                     {"action": "browser_ready", "email": TARGET_EMAIL, "selectedAt": 99.0})

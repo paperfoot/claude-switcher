@@ -94,6 +94,7 @@ async function makeHarness({
   pendingEmail = null,
   pendingSelectedAt = nowSeconds() - 60,
   pendingUnfinished = false,
+  pendingLoginDead = false,
   pendingResults = null,
   selectResult = null,
   nativeOverrides = {},
@@ -150,7 +151,8 @@ async function makeHarness({
       case 'pending_selection':
         if (pendingResults?.length) return pendingResults.shift();
         return {ok: true, email: pendingEmail, selectedAt: pendingEmail ? pendingSelectedAt : null,
-                unfinished: pendingEmail ? pendingUnfinished : undefined};
+                unfinished: pendingEmail ? pendingUnfinished : undefined,
+                loginDead: pendingEmail ? pendingLoginDead : undefined};
       case 'select':
         return selectResult ?? {ok: true, email: message.email};
       case 'browser_ready':
@@ -385,6 +387,15 @@ test('a profile closed during a switch catches up once when it opens', async () 
   await restarted.settle();
   assert.equal(restarted.requested('vault_get').length, 0);
   assert.equal(restarted.requested('browser_ready').length, 0);
+});
+
+test('a selection whose saved login is known dead is not restored on catch-up', async () => {
+  const storage = {selection: {appliedAt: nowSeconds() - 600, identity: sha256Hex(EMAIL.A)}};
+  const harness = await makeHarness({pendingEmail: EMAIL.B, pendingLoginDead: true, storage});
+  await harness.waitForNative('pending_selection');
+  await harness.settle();
+  assert.equal(harness.requested('vault_get').length, 0);
+  assert.equal(harness.currentEmail(), EMAIL.A);
 });
 
 test('a profile already on the selection acknowledges again while the switch is unfinished', async () => {

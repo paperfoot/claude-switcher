@@ -186,7 +186,7 @@ function saveCurrentSession({force = false} = {}) {
 // `signedIn`: a new login was just saved here. When it is the account Code selected, this
 // profile has finished that selection by hand, so the companion can call the switch done.
 async function catchUp({signedIn = false} = {}) {
-  const {email, selectedAt, unfinished} = await native('pending_selection', {perProfile: true});
+  const {email, selectedAt, unfinished, loginDead} = await native('pending_selection', {perProfile: true});
   if (!email || !Number.isFinite(selectedAt)) return;
   if (signedIn && await switcher.identity() === email) {
     await selections.switched(email, selectedAt);
@@ -210,6 +210,9 @@ async function catchUp({signedIn = false} = {}) {
     if (unfinished === true) void native('browser_ready', {email, selectedAt}).catch(() => {});
     return;
   }
+  // claude.ai revoked this account's saved login: restoring it would only probe and roll
+  // back, and hold up every other request meanwhile. Signing in finishes the switch instead.
+  if (loginDead === true) return;
   // A popup or menu switch queued while this ran wins: it changes the record.
   const before = await selections.current();
   const unchanged = async () => {
