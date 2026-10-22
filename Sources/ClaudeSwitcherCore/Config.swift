@@ -154,14 +154,16 @@ public struct Config: Codable, Equatable, Sendable {
     /// one nears its five-hour or weekly limit. claude-swap's engine makes the decision.
     public var autoSwitch: Bool
 
-    /// Binding-window utilization (the higher of 5h and weekly) that triggers an automatic
-    /// switch. claude-swap accepts 50–99.9.
+    /// Binding-window utilization (the higher of 5h and weekly) at which an account counts
+    /// as spent: auto-switch leaves it and never picks it. Auto-switch spends the account
+    /// that resets soonest first, so a high value keeps its last few percent from expiring
+    /// unused. claude-swap accepts 50–99.9.
     public var autoSwitchThreshold: Double
 
     /// Global shortcut that opens the command palette, e.g. "option+space".
     public var paletteShortcut: String
 
-    public static let defaultAutoSwitchThreshold: Double = 95
+    public static let defaultAutoSwitchThreshold: Double = 98
     public static let defaultPaletteShortcut = "option+space"
 
     public init(

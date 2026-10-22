@@ -332,8 +332,14 @@ AUTO_THRESHOLD_RANGE = (50.0, 99.9)
 
 def auto_events(threshold, timeout):
     """One `cswap auto --once` decision as JSON events. claude-swap paces its own usage
-    polls through its usage store, so calling this every minute stays within rate limits."""
-    result = subprocess.run([configuration()['cswap'], 'auto', '--once', '--json', '--threshold', f'{threshold:g}'],
+    polls through its usage store, so calling this every minute stays within rate limits.
+
+    consume-first moves Code to the account whose weekly window resets soonest while it
+    still has room, so quota that is about to reset is spent before quota that keeps.
+    Room means usage under `threshold`, which is why the app's default sits near the limit.
+    """
+    result = subprocess.run([configuration()['cswap'], 'auto', '--once', '--json', '--strategy', 'consume-first',
+                             '--threshold', f'{threshold:g}'],
                             env=clean_environment(), stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     # Exit 0: switched. 2: nothing to do. 3: no viable target. 1: the engine failed.
     if result.returncode not in (0, 2, 3):

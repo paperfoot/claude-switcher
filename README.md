@@ -83,7 +83,7 @@ The menu bar menu shows every account with its usage. Click an email to switch. 
 
 ## Switch automatically near a limit
 
-Type `auto` in the palette and turn on **Auto-switch at limit**. When the selected Claude account reaches 95% of its five-hour or weekly limit, the switcher moves Claude Code and every connected Chrome profile to the account with the most headroom, so long sessions keep going.
+Type `auto` in the palette and turn on **Auto-switch at limit**. The switcher keeps Claude Code and every connected Chrome profile on the account whose weekly limit resets soonest and still has room, so quota that is about to reset gets used instead of expiring. An account counts as spent at 98% of its five-hour or weekly limit; then the switcher moves on to the next account in reset order, so long sessions keep going.
 
 - The decision comes from [claude-swap's auto-switch engine](https://github.com/realiti4/claude-swap): it refreshes the target's login first, never lands on an account that is near its own limit, and avoids switching back and forth.
 - Usage is polled at a pace Anthropic's usage endpoint accepts (roughly one request per account every few minutes, faster near the limit), so turning this on does not get accounts rate-limited.

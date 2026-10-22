@@ -73,7 +73,7 @@ public struct PaletteContext: Sendable {
 
     public init(accounts: [PaletteAccount] = [], desktopProfiles: [PaletteDesktopProfile] = [],
                 toggles: [PaletteToggle: Bool] = [:], stagedUpdateVersion: String? = nil,
-                coordinated: Bool = true, jevAvailable: Bool = false, autoSwitchThreshold: Int = 95) {
+                coordinated: Bool = true, jevAvailable: Bool = false, autoSwitchThreshold: Int = 98) {
         self.autoSwitchThreshold = autoSwitchThreshold
         self.accounts = accounts
         self.desktopProfiles = desktopProfiles
@@ -992,7 +992,7 @@ enum PaletteCatalog {
                                                 "stop": true, "resume": false, "unpause": false, "unblock": false])
         case .autoSwitch:
             return PaletteEntry(action: .toggle(toggle), name: "Auto-switch at limit",
-                                subtitle: "At \(context.autoSwitchThreshold)% of a limit, move Claude to the account with most headroom",
+                                subtitle: "Spend the account that resets soonest first; leave it at \(context.autoSwitchThreshold)% of a limit",
                                 symbol: "arrow.triangle.swap",
                                 keywords: keywords(["auto": 1, "automatic": 1, "automatically": 0.9,
                                                     "autoswitch": 1, "auto-switch": 1, "limit": 1, "limits": 0.9,
