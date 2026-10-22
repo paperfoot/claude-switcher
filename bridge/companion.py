@@ -328,6 +328,7 @@ def extension_follow(email):
 
 
 AUTO_THRESHOLD_RANGE = (50.0, 99.9)
+AUTO_COOLDOWN = 120
 
 
 def auto_events(threshold, timeout):
@@ -337,9 +338,11 @@ def auto_events(threshold, timeout):
     consume-first moves Code to the account whose weekly window resets soonest while it
     still has room, so quota that is about to reset is spent before quota that keeps.
     Room means usage under `threshold`, which is why the app's default sits near the limit.
+    A target can arrive just under it, so the cooldown between proactive moves is two
+    minutes rather than claude-swap's five, or the account could run into its hard limit first.
     """
     result = subprocess.run([configuration()['cswap'], 'auto', '--once', '--json', '--strategy', 'consume-first',
-                             '--threshold', f'{threshold:g}'],
+                             '--cooldown', str(AUTO_COOLDOWN), '--threshold', f'{threshold:g}'],
                             env=clean_environment(), stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     # Exit 0: switched. 2: nothing to do. 3: no viable target. 1: the engine failed.
     if result.returncode not in (0, 2, 3):
