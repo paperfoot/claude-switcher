@@ -98,8 +98,8 @@ enum MenuBuilder {
                 item.toolTip = "Use this account in Chrome and the next Claude Code session."
                 if item.badge == nil, let email = profile.expectedEmail,
                    input.chromeSignInEmails.contains(email.lowercased()) {
-                    item.badge = NSMenuItemBadge(string: "Chrome sign-in")
-                    item.toolTip = "Chrome's saved login for this account has expired. Choose it to sign in to claude.ai once; the switch then finishes by itself."
+                    item.attributedTitle = titleWithSignInMark(item.title)
+                    item.toolTip = "Chrome needs a fresh sign-in for this account. Choose it to sign in to claude.ai once; the switch then finishes by itself."
                 }
             }
             menu.addItem(item)
@@ -349,6 +349,24 @@ enum MenuBuilder {
         item.badge = presentation.badge.map { NSMenuItemBadge(string: $0) }
         item.toolTip = presentation.help
         item.isEnabled = status != nil
+    }
+
+    /// The account title followed by a small amber sign-in mark: Chrome's login for it expired.
+    static func titleWithSignInMark(_ title: String) -> NSAttributedString {
+        let font = NSFont.menuFont(ofSize: 0)
+        let result = NSMutableAttributedString(string: title + " ", attributes: [.font: font])
+        let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular)
+            .applying(.init(paletteColors: [StatusItemFeedback.warningColor]))
+        if let image = NSImage(systemSymbolName: "person.crop.circle.badge.exclamationmark",
+                               accessibilityDescription: "Chrome sign-in needed")?
+            .withSymbolConfiguration(configuration) {
+            let attachment = NSTextAttachment()
+            attachment.image = image
+            // Sit on the text's baseline like a glyph.
+            attachment.bounds = NSRect(x: 0, y: font.descender / 2, width: image.size.width, height: image.size.height)
+            result.append(NSAttributedString(attachment: attachment))
+        }
+        return result
     }
 
     static func informationalItem(_ text: String) -> NSMenuItem {

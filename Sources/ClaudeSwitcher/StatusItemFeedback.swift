@@ -44,13 +44,16 @@ final class StatusItemFeedback {
         showSymbol(complete ? "checkmark" : "exclamationmark.triangle",
                    tint: complete ? Self.successColor : (ok ? Self.warningColor : Self.failureColor))
         setDescription(complete ? "Switched to \(email)" : message)
-        guard complete else { return }
+        // A failed switch stays until the next one. When Code switched and only Chrome lags,
+        // the menu keeps the details and the account row its sign-in mark, so the menu bar
+        // goes back to normal rather than showing a warning for hours.
+        guard ok else { return }
         resetTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(3)) }
+            do { try await Task.sleep(for: .seconds(complete ? 3 : 10)) }
             catch { return }
             guard let self else { return }
             self.showIdle(email: email)
-            onSuccessDismiss()
+            if complete { onSuccessDismiss() }
         }
     }
 
@@ -77,7 +80,7 @@ final class StatusItemFeedback {
     }
 
     private static let successColor = adaptive(light: (0.12, 0.46, 0.27), dark: (0.38, 0.82, 0.51))
-    private static let warningColor = adaptive(light: (0.60, 0.36, 0.02), dark: (1, 0.72, 0.29))
+    static let warningColor = adaptive(light: (0.60, 0.36, 0.02), dark: (1, 0.72, 0.29))
     private static let failureColor = adaptive(light: (0.76, 0.16, 0.14), dark: (1, 0.39, 0.35))
 
     private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> NSColor {
