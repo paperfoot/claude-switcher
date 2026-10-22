@@ -1450,6 +1450,8 @@ class AutoTickTests(unittest.TestCase):
         self.assertTrue(state["automatic"])
         self.assertEqual(state["codeEmail"], TARGET_EMAIL)
         self.assertIsInstance(state["selectedAt"], float)
+        # The app matches a later Chrome catch-up against this selection.
+        self.assertEqual(result["selectedAt"], state["selectedAt"])
 
     def test_closed_chrome_still_records_a_selection_to_catch_up_on(self):
         self.code_identity.side_effect = [OLD_EMAIL, TARGET_EMAIL]

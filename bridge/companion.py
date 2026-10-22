@@ -434,7 +434,7 @@ def auto_tick(threshold, deadline=None, events=None):
         atomic_json(STATE, state)
         event_log.emit(BASE, 'switch_finished', scope='auto', ok=ready or web.get('error') == 'browser_missing',
                        browserReady=ready, **({'browserError': web.get('error')} if not ready else {}))
-        return {'ok': True, **moved, 'codeEmail': email, 'browserReady': ready,
+        return {'ok': True, **moved, 'codeEmail': email, 'browserReady': ready, 'selectedAt': selected_at,
                 'browserError': None if ready else web.get('error', 'web_unavailable'), **followed}
 
 

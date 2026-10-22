@@ -551,8 +551,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.switchMessage = nil
                 self.rebuildIfVisible()
             }
-            if let result, result.codeSwitched, result.browserReady != true {
-                watchChromeFinish(result, email: email, generation: generation, setup: setup)
+            if let result, result.codeSwitched, result.browserReady != true, let selectedAt = result.selectedAt {
+                watchChromeFinish(email: email, selectedAt: selectedAt, generation: generation, setup: setup,
+                                  finished: "Chrome and Code switched", keep: false)
             }
             refreshCoordinatedAccounts(setup: setup, force: true)
             rebuildIfVisible()
@@ -561,22 +562,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// After a partial switch, signing in to the selected account in Chrome finishes it:
     /// the companion upgrades the saved state, and this turns the warning into a tick.
-    private func watchChromeFinish(_ partial: CoordinatedResult, email: String, generation: Int,
-                                   setup: CoordinatedSetup) {
+    /// `keep` leaves `finished` in the menu until the next switch instead of clearing it, and
+    /// watches until then: Chrome may only catch up when it next opens, hours later.
+    private func watchChromeFinish(email: String, selectedAt: Double, generation: Int, setup: CoordinatedSetup,
+                                   finished: String, keep: Bool) {
         chromeFinishTimer?.invalidate()
-        let giveUp = Date().addingTimeInterval(30 * 60)
+        let giveUp = keep ? Date.distantFuture : Date().addingTimeInterval(30 * 60)
         let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 guard self.coordinatedGeneration == generation, Date() < giveUp else {
                     self.chromeFinishTimer?.invalidate(); return
                 }
-                guard let saved = CoordinatedResult.savedState(), partial.isFinished(by: saved) else { return }
+                guard let saved = CoordinatedResult.savedState(),
+                      saved.finishes(email: email, selectedAt: selectedAt) else { return }
                 self.chromeFinishTimer?.invalidate()
-                self.switchMessage = "Chrome and Code switched"
+                self.switchMessage = finished
                 self.statusFeedback?.finish(ok: true, browserReady: true, email: email,
-                                            message: "Chrome and Code switched") { [weak self] in
-                    guard let self, self.coordinatedGeneration == generation else { return }
+                                            message: finished) { [weak self] in
+                    guard let self, !keep, self.coordinatedGeneration == generation else { return }
                     self.switchMessage = nil
                     self.rebuildIfVisible()
                 }
@@ -1652,17 +1656,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             coordinatedGeneration += 1
+            let generation = coordinatedGeneration
+            chromeFinishTimer?.invalidate()
             selectedEmailOverride = email
             let browserReady = result.browserReady == true
             let extensionReady = result.extensionReady != false
             // Kept until the next switch: an automatic change must never be silent.
-            switchMessage = "Switched automatically to \(email) at \(MenuBuilder.clock(Date(), now: Date()))"
+            let notice = "Switched automatically to \(email) at \(MenuBuilder.clock(Date(), now: Date()))"
+            switchMessage = notice
                 + (!browserReady ? " · Chrome needs attention"
                    : extensionReady ? ""
                    : result.extensionError == "accessibility_needed" ? " · allow Accessibility for the Claude extension"
                    : " · Claude extension needs attention")
             statusFeedback?.finish(ok: true, browserReady: browserReady && extensionReady, email: email,
                                    message: switchMessage ?? "") {}
+            // Chrome catching up later (a sign-in, or Chrome reopening) drops the warning.
+            if !browserReady, let selectedAt = result.selectedAt {
+                watchChromeFinish(email: email, selectedAt: selectedAt, generation: generation, setup: setup,
+                                  finished: notice, keep: true)
+            }
             refreshCoordinatedAccounts(setup: setup, force: true)
             rebuildIfVisible()
         }

@@ -96,9 +96,14 @@ public struct CoordinatedResult: Decodable, Sendable {
 
     /// `saved` is this partial switch, now finished in Chrome too.
     public func isFinished(by saved: Self) -> Bool {
-        guard let selectedAt, let codeEmail, saved.ok, saved.browserReady == true,
-              saved.selectedAt == selectedAt else { return false }
-        return saved.codeEmail?.caseInsensitiveCompare(codeEmail) == .orderedSame
+        guard let selectedAt, let codeEmail else { return false }
+        return saved.finishes(email: codeEmail, selectedAt: selectedAt)
+    }
+
+    /// This saved state is the selection of `email` made at `selectedAt`, finished in Chrome.
+    public func finishes(email: String, selectedAt: Double) -> Bool {
+        guard ok, browserReady == true, self.selectedAt == selectedAt else { return false }
+        return codeEmail?.caseInsensitiveCompare(email) == .orderedSame
     }
 
     /// Code now uses the selected account. True for a full success and for a partial
@@ -147,12 +152,14 @@ public struct AutoSwitchResult: Decodable, Sendable {
     public let reason: String?
     public let codeEmail: String?
     public let previousEmail: String?
-    /// claude-swap's trigger: "proactive", "at-limit" or "failover".
+    /// claude-swap's trigger: "consume-first", "proactive", "at-limit" or "failover".
     public let trigger: String?
     public let browserReady: Bool?
     public let browserError: String?
     public let extensionReady: Bool?
     public let extensionError: String?
+    /// When the companion recorded the switch, in Unix seconds; matches the saved state.
+    public let selectedAt: Double?
 }
 
 /// A coordinator run that produced no usable result. `description` may end with the

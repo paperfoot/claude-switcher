@@ -46,6 +46,17 @@ struct CoordinatedSwitchingTests {
         #expect(!partial.isFinished(by: partial))
     }
 
+    @Test func anAutomaticPartialSwitchIsFinishedBySavedStateForItsSelection() throws {
+        let auto = try JSONDecoder().decode(AutoSwitchResult.self, from: Data(
+            #"{"ok":true,"switched":true,"codeEmail":"a@example.com","browserReady":false,"browserError":"web_unavailable","selectedAt":100.5}"#.utf8))
+        let selectedAt = try #require(auto.selectedAt)
+        func saved(_ json: String) throws -> CoordinatedResult { try JSONDecoder().decode(CoordinatedResult.self, from: Data(json.utf8)) }
+        #expect(try saved(#"{"ok":true,"codeEmail":"a@example.com","browserReady":true,"selectedAt":100.5,"recovered":true}"#)
+            .finishes(email: "a@example.com", selectedAt: selectedAt))
+        #expect(!(try saved(#"{"ok":false,"partial":true,"codeEmail":"a@example.com","browserReady":false,"selectedAt":100.5}"#)
+            .finishes(email: "a@example.com", selectedAt: selectedAt)))
+    }
+
     @Test func savedChromeLoginExpiriesAreDecoded() throws {
         let json = #"{"accounts":[],"codeEmail":null,"browser":{"ok":true,"email":"one@example.com","accounts":["one@example.com"],"expiries":{"one@example.com":1790000000.5}}}"#
         let browser = try JSONDecoder().decode(CoordinatedSnapshot.self, from: Data(json.utf8)).browser
