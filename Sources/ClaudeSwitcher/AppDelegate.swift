@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var selectedEmailOverride: String?
     /// Shown under the Claude accounts while a saved Chrome login is about to expire.
     private var loginWarning: String?
-    /// Lowercased emails whose saved Chrome login has expired or expires within days.
+    /// Lowercased emails whose saved Chrome login has expired; choosing one opens claude.ai's sign-in.
     private var chromeSignInEmails: Set<String> = []
     /// Automatic switching waits after a manual choice, so it never overrides one at once.
     private var lastManualSwitch: Date = .distantPast
@@ -492,7 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let due = Self.chromeLoginsDue(browser: result.browser,
                                                emails: config.profiles.compactMap(\.expectedEmail), now: now)
                 loginWarning = Self.loginWarning(due, now: now)
-                chromeSignInEmails = Set(due.map { $0.email.lowercased() })
+                chromeSignInEmails = Set(due.filter { $0.expiry <= now }.map { $0.email.lowercased() })
                 for profile in config.profiles {
                     guard let email = profile.expectedEmail,
                           let row = result.accounts.first(where: { $0.email.caseInsensitiveCompare(email) == .orderedSame }) else { continue }
@@ -1674,7 +1674,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Kept until the next switch: an automatic change must never be silent.
             let notice = "Switched automatically to \(email) at \(MenuBuilder.clock(Date(), now: Date()))"
             switchMessage = notice
-                + (!browserReady ? " · Chrome needs attention"
+                + (result.browserError == "web_login_expired" ? " · choose it to sign in to Chrome"
+                   : !browserReady ? " · Chrome needs attention"
                    : extensionReady ? ""
                    : result.extensionError == "accessibility_needed" ? " · allow Accessibility for the Claude extension"
                    : " · Claude extension needs attention")
