@@ -14,9 +14,9 @@ a rollback, still need), so a switch stops and restores before its caller gives 
                                              older popup (it waits 120 s) sends none
   Inside a budget
     claude auth status                       IDENTITY_TIMEOUT 15 s
-    cswap auto --once (one decision)         AUTO_ENGINE_TIMEOUT 90 s, inside MENU_BUDGET
+    engine auto --once (one decision)        AUTO_ENGINE_TIMEOUT 90 s, inside MENU_BUDGET
     waiting for the switch lock              LOCK_WAIT 30 s; POPUP_LOCK_WAIT 10 s
-    cswap switch or list                     CSWAP_TIMEOUT 60 s; a forward switch keeps
+    engine switch or list                    CSWAP_TIMEOUT 60 s; a forward switch keeps
                                              CODE_RESTORE_RESERVE 45 s to restore Code
     Code credential cache repair             skipped with under 30 s left
     status of one Chrome profile             STATUS_TIMEOUT 10 s

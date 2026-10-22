@@ -5,7 +5,35 @@ public struct CoordinatedSetup: Codable, Sendable {
     public let enabled: Bool
     public let python: String
     public let helper: String
-    public let cswap: String
+    /// The account engine's launcher (`claude-switcher-engine`).
+    public let engine: String
+
+    public init(enabled: Bool, python: String, helper: String, engine: String) {
+        self.enabled = enabled
+        self.python = python
+        self.helper = helper
+        self.engine = engine
+    }
+
+    private enum CodingKeys: String, CodingKey { case enabled, python, helper, engine, cswap }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        python = try container.decode(String.self, forKey: .python)
+        helper = try container.decode(String.self, forKey: .helper)
+        // Setups before the engine moved in-house named claude-swap's `cswap` instead.
+        engine = try container.decodeIfPresent(String.self, forKey: .engine)
+            ?? container.decode(String.self, forKey: .cswap)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(python, forKey: .python)
+        try container.encode(helper, forKey: .helper)
+        try container.encode(engine, forKey: .engine)
+    }
 
     public static var url: URL { Config.configURL.deletingLastPathComponent().appendingPathComponent("coordinated.json") }
     public static func load() -> Self? {
@@ -146,13 +174,13 @@ public struct CoordinatedResult: Decodable, Sendable {
 /// The outcome of one automatic-switch decision.
 public struct AutoSwitchResult: Decodable, Sendable {
     public let ok: Bool
-    /// claude-swap moved Claude Code to `codeEmail`.
+    /// The engine moved Claude Code to `codeEmail`.
     public let switched: Bool?
     /// Why nothing changed, e.g. "below-threshold" or "all_exhausted".
     public let reason: String?
     public let codeEmail: String?
     public let previousEmail: String?
-    /// claude-swap's trigger: "consume-first", "proactive", "at-limit" or "failover".
+    /// The engine's trigger: "consume-first", "proactive", "at-limit" or "failover".
     public let trigger: String?
     public let browserReady: Bool?
     public let browserError: String?
@@ -194,7 +222,7 @@ public enum CoordinatedSwitching {
     public static func select(email: String, setup: CoordinatedSetup) throws -> CoordinatedResult {
         try decode(CoordinatedResult.self, from: run(setup: setup, arguments: ["switch", email]))
     }
-    /// One claude-swap auto-switch decision. When it moves Claude Code to another account,
+    /// One account-engine auto-switch decision. When it moves Claude Code to another account,
     /// the helper moves the connected Chrome profiles to the same account before returning.
     public static func autoTick(setup: CoordinatedSetup, threshold: Double) throws -> AutoSwitchResult {
         try decode(AutoSwitchResult.self, from: run(setup: setup, arguments: ["auto-tick", String(threshold)]))

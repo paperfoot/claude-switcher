@@ -15,7 +15,8 @@ import sys
 import tempfile
 
 
-REQUIRED_CSWAP_VERSION = "0.26.0"
+ENGINE_NAME = "claude-switcher-engine"
+MINIMUM_PYTHON = (3, 12)
 NATIVE_HOST_NAME = "org.paperfoot.claude_switcher"
 SELECTORS = (
     "CLAUDE_CONFIG_DIR",
@@ -52,9 +53,10 @@ def parse_args() -> argparse.Namespace:
         help="Claude Switcher application bundle",
     )
     parser.add_argument(
-        "--cswap",
-        default="~/.local/bin/cswap",
-        help="cswap 0.26.0 executable",
+        "--python",
+        default=None,
+        help="Python 3.12+ for the account engine and companion "
+        "(default: uv's own Python, then any uv can find)",
     )
     parser.add_argument(
         "--claude",
@@ -83,8 +85,8 @@ def clean_environment() -> dict[str, str]:
     return environment
 
 
-def run_cswap(
-    cswap: Path,
+def run_engine(
+    engine: Path,
     arguments: list[str],
     *,
     environment: dict[str, str] | None = None,
@@ -92,7 +94,7 @@ def run_cswap(
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
-            [str(cswap), *arguments],
+            [str(engine), *arguments],
             env=environment or clean_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -101,23 +103,44 @@ def run_cswap(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SetupError("cswap could not be run.") from exc
+        raise SetupError("The account engine could not be run.") from exc
 
 
-def validate_cswap(cswap: Path) -> Path:
-    require_executable(cswap, "cswap")
-    result = run_cswap(cswap, ["--version"], timeout=15)
-    version = result.stdout.decode("utf-8", errors="replace").strip()
-    if result.returncode != 0 or version != f"cswap {REQUIRED_CSWAP_VERSION}":
-        raise SetupError(f"cswap {REQUIRED_CSWAP_VERSION} is required.")
-
+def python_is_usable(python: Path) -> bool:
+    """True for an executable Python new enough for the engine, run the way the engine runs."""
+    if not python.is_file() or not os.access(python, os.X_OK):
+        return False
+    check = f"import sys; sys.exit(0 if sys.version_info >= {MINIMUM_PYTHON!r} else 1)"
     try:
-        resolved = cswap.resolve(strict=True)
-    except OSError as exc:
-        raise SetupError("The cswap installation could not be resolved.") from exc
-    runtime = resolved.parent / "python3"
-    require_executable(runtime, "cswap Python")
-    return runtime
+        return subprocess.run([str(python), "-I", "-c", check], stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=15, check=False).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def find_python(requested: str | None) -> Path:
+    """The interpreter for the engine and the companion: both use the standard library only.
+
+    uv's own builds come first: nothing else upgrades them underneath the app, unlike a
+    Homebrew or conda Python.
+    """
+    if requested:
+        python = absolute_path(requested)
+        if not python_is_usable(python):
+            raise SetupError("The requested Python must be version 3.12 or newer.")
+        return python
+    uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
+    version = ">=" + ".".join(map(str, MINIMUM_PYTHON))
+    for extra in (["--managed-python"], []):
+        try:
+            found = subprocess.run([uv, "python", "find", *extra, version], stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        candidate = found.stdout.strip()
+        if found.returncode == 0 and candidate and python_is_usable(Path(candidate)):
+            return Path(candidate)
+    raise SetupError("Python 3.12 or newer is required: run `uv python install 3.13` and try again.")
 
 
 def read_profiles(config_path: Path) -> list[tuple[str, str | None]]:
@@ -157,8 +180,8 @@ def read_profiles(config_path: Path) -> list[tuple[str, str | None]]:
     return unique
 
 
-def listed_emails(cswap: Path, *, verification: bool = False) -> set[str]:
-    result = run_cswap(cswap, ["list", "--json"])
+def listed_emails(engine: Path, *, verification: bool = False) -> set[str]:
+    result = run_engine(engine, ["list", "--json"])
     if result.returncode != 0:
         message = "Managed accounts could not be verified." if verification else "Managed accounts could not be read."
         raise SetupError(message)
@@ -180,8 +203,8 @@ def listed_emails(cswap: Path, *, verification: bool = False) -> set[str]:
     return emails
 
 
-def import_profiles(cswap: Path, profiles: list[tuple[str, str | None]]) -> list[str]:
-    existing = listed_emails(cswap)
+def import_profiles(engine: Path, profiles: list[tuple[str, str | None]]) -> list[str]:
+    existing = listed_emails(engine)
     for email, cred_dir in profiles:
         if email.casefold() in existing:
             continue
@@ -191,13 +214,13 @@ def import_profiles(cswap: Path, profiles: list[tuple[str, str | None]]) -> list
             environment["CLAUDE_CONFIG_DIR"] = resolved_cred_dir
             environment["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = resolved_cred_dir
         try:
-            result = run_cswap(cswap, ["add"], environment=environment)
+            result = run_engine(engine, ["add"], environment=environment)
         except SetupError as exc:
             raise ProfileImportError([email]) from exc
         if result.returncode != 0:
             raise ProfileImportError([email])
 
-    final = listed_emails(cswap, verification=True)
+    final = listed_emails(engine, verification=True)
     missing = [email for email, _ in profiles if email.casefold() not in final]
     if missing:
         raise ProfileImportError(missing)
@@ -308,10 +331,40 @@ def validate_extension_id(value: str) -> str:
     return extension_id
 
 
+def support_root() -> Path:
+    root = Path.home() / "Library" / "Application Support" / "Claude Switcher"
+    ensure_owned_directory(root)
+    return root
+
+
+def install_engine(app: Path, python: Path) -> Path:
+    """Install the account engine from the app bundle; return its launcher.
+
+    Isolated mode (-I) keeps PYTHON* variables and user site-packages out, so the
+    engine runs on the standard library and its own files alone.
+    """
+    root = support_root()
+    engine_dir = root / "Engine"
+    replace_tree(app / "Contents" / "Resources" / "Engine", engine_dir, bridge_ignore)
+    entry = engine_dir / ENGINE_NAME
+    if not entry.is_file():
+        raise SetupError("The installed account engine is missing.")
+    launcher = root / ENGINE_NAME
+    launcher_text = (
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(str(python))} -I {shlex.quote(str(entry))} \"$@\"\n"
+    )
+    atomic_write(launcher, launcher_text.encode("utf-8"), 0o700)
+    result = run_engine(launcher, ["--version"], timeout=15)
+    if result.returncode != 0 or not result.stdout.decode("utf-8", "replace").startswith(ENGINE_NAME + " "):
+        raise SetupError("The installed account engine does not run.")
+    return launcher
+
+
 def install_components(
     app: Path,
     python: Path,
-    cswap: Path,
+    engine: Path,
     claude: Path,
     config_path: Path,
 ) -> tuple[Path, Path]:
@@ -323,17 +376,16 @@ def install_components(
     except OSError as exc:
         raise SetupError("The application bundle is missing its extension ID.") from exc
 
-    support_root = Path.home() / "Library" / "Application Support" / "Claude Switcher"
-    ensure_owned_directory(support_root)
-    bridge = support_root / "Bridge"
-    extension = support_root / "BrowserExtension"
+    root = support_root()
+    bridge = root / "Bridge"
+    extension = root / "BrowserExtension"
     replace_tree(source_bridge, bridge, bridge_ignore)
     replace_tree(source_extension, extension, extension_ignore)
 
     helper = bridge / "companion.py"
     if not helper.is_file():
         raise SetupError("The installed bridge helper is missing.")
-    launcher = support_root / "native-host"
+    launcher = root / "native-host"
     launcher_text = (
         "#!/bin/sh\n"
         f"exec {shlex.quote(str(python))} {shlex.quote(str(helper))} native \"$@\"\n"
@@ -369,7 +421,7 @@ def install_components(
         "enabled": True,
         "python": str(python),
         "helper": str(helper),
-        "cswap": str(cswap),
+        "engine": str(engine),
         "claude": str(claude),
     }
     atomic_write(config_path.parent / "coordinated.json", json_bytes(coordinated), 0o600)
@@ -399,7 +451,6 @@ def restart_native_hosts(helper: Path) -> int:
 def main() -> int:
     args = parse_args()
     app = absolute_path(args.app)
-    cswap = absolute_path(args.cswap)
     claude = absolute_path(args.claude)
     config_path = Path.home() / ".config" / "claude-switcher" / "config.json"
 
@@ -407,10 +458,11 @@ def main() -> int:
         if not app.is_dir():
             raise SetupError("Claude Switcher.app was not found.")
         require_executable(claude, "Claude Code")
-        python = validate_cswap(cswap)
+        python = find_python(args.python)
         profiles = read_profiles(config_path)
-        accounts = import_profiles(cswap, profiles)
-        extension, host = install_components(app, python, cswap, claude, config_path)
+        engine = install_engine(app, python)
+        accounts = import_profiles(engine, profiles)
+        extension, host = install_components(app, python, engine, claude, config_path)
         restarted = restart_native_hosts(host.parent / "Bridge" / "companion.py")
     except ProfileImportError as exc:
         for email in exc.emails:

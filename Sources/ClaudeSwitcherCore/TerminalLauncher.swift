@@ -3,7 +3,7 @@ import Foundation
 
 /// Creates a small Terminal document; opening it needs no Apple Events permission.
 public enum TerminalLauncher {
-    /// - Parameter register: run after a successful sign-in, e.g. `cswap add` with the same
+    /// - Parameter register: run after a successful sign-in, e.g. the engine's `add` with the same
     ///   account directory, so coordinated switching knows the new account immediately.
     public static func write(profile: Profile, executable: String, directory: URL, signIn: Bool = false,
                              register: String? = nil) throws -> URL {

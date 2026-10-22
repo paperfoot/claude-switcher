@@ -4,6 +4,8 @@ User-visible changes, newest first. From 0.6.1 on, version numbers belong to thi
 
 ## Unreleased
 
+- The account engine that saves, switches and auto-switches Claude Code logins is now part of Claude Switcher instead of a separate `claude-swap` install. It began as claude-swap 0.26.0 and runs from the app on Python's standard library alone, with no third-party packages, so setup no longer needs `uv tool install claude-swap`. Saved accounts stay where they were and carry over untouched.
+- Auto-switch no longer keeps away from an account whose five-hour window has reset since it left it, so that account's last weekly points, if they reset soonest, are used rather than expiring.
 - Auto-switch now spends the account whose weekly limit resets soonest first, while it still has room, so the last few percent of an account is used before it resets instead of expiring. Before, it waited for the selected account to hit the limit and then picked the account with the most room left, which saved the perishable quota for last. An account counts as spent at 98% (was 95%).
 - After an automatic switch that Chrome could not follow, the menu's "Chrome needs attention" warning now clears once Chrome catches up, whether you sign in or Chrome simply reopens. Before, it stayed until the next switch, even hours after Chrome had recovered.
 - Each account whose saved Chrome login has expired now shows a small amber sign-in mark after its email, so "choose one to sign in" says which ones; hover it for what to do. Logins that only expire soon get the warning line but no mark, since choosing them works as usual.

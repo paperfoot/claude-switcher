@@ -151,13 +151,13 @@ public struct Config: Codable, Equatable, Sendable {
     public var blockClaudeUpdates: Bool
 
     /// Move Chrome and Claude Code to the account with the most headroom when the selected
-    /// one nears its five-hour or weekly limit. claude-swap's engine makes the decision.
+    /// one nears its five-hour or weekly limit. The account engine makes the decision.
     public var autoSwitch: Bool
 
     /// Binding-window utilization (the higher of 5h and weekly) at which an account counts
     /// as spent: auto-switch leaves it and never picks it. Auto-switch spends the account
     /// that resets soonest first, so a high value keeps its last few percent from expiring
-    /// unused. claude-swap accepts 50–99.9.
+    /// unused. The engine accepts 50–99.9.
     public var autoSwitchThreshold: Double
 
     /// Global shortcut that opens the command palette, e.g. "option+space".
@@ -200,7 +200,7 @@ public struct Config: Codable, Equatable, Sendable {
         self.reopenAfterUpdate = try container.decodeIfPresent(Bool.self, forKey: .reopenAfterUpdate) ?? true
         self.blockClaudeUpdates = try container.decodeIfPresent(Bool.self, forKey: .blockClaudeUpdates) ?? false
         self.autoSwitch = try container.decodeIfPresent(Bool.self, forKey: .autoSwitch) ?? false
-        // Out-of-range values fall back rather than reach claude-swap, which rejects them.
+        // Out-of-range values fall back rather than reach the engine, which rejects them.
         let threshold = try container.decodeIfPresent(Double.self, forKey: .autoSwitchThreshold)
         self.autoSwitchThreshold = threshold.flatMap { (50...99.9).contains($0) ? $0 : nil }
             ?? Config.defaultAutoSwitchThreshold

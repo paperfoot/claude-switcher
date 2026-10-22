@@ -898,11 +898,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// In coordinated mode a new login must also be saved by claude-swap, or selecting the
-    /// account later fails. Same account directory as the login, so cswap reads that login.
+    /// In coordinated mode a new login must also be saved by the account engine, or selecting
+    /// the account later fails. Same account directory as the login, so the engine reads it.
     private func coordinatedRegistration(for profile: Profile) -> String? {
         guard let setup = CoordinatedSetup.load(), setup.enabled, profile.credDir != nil else { return nil }
-        return LaunchPlanning.terminalCommand(for: profile, executable: setup.cswap) + " add"
+        return LaunchPlanning.terminalCommand(for: profile, executable: setup.engine) + " add"
     }
 
     private func launchTerminal(profile: Profile, executable: String, signIn: Bool, register: String? = nil) {
@@ -1622,7 +1622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Automatic switching
 
-    /// One claude-swap decision a minute. Its usage store paces the network polls (about one
+    /// One account-engine decision a minute. Its usage store paces the network polls (about one
     /// per account every few minutes, faster near the threshold), so ticking often is cheap.
     private func scheduleAutoSwitch() {
         autoSwitchTimer?.invalidate()

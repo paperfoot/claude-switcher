@@ -1513,14 +1513,14 @@ class AutoTickTests(unittest.TestCase):
     def test_engine_output_is_parsed_and_its_failure_raises(self):
         output = b'{"event":"poll"}\n{"event":"no-switch","reason":"below-threshold"}\nnot json\n'
         completed = types.SimpleNamespace(returncode=2, stdout=output, stderr=b"")
-        with mock.patch.object(companion, "configuration", return_value={"cswap": "/bin/cswap"}), \
+        with mock.patch.object(companion, "configuration", return_value={"engine": "/bin/cswap"}), \
                 mock.patch.object(companion.subprocess, "run", return_value=completed) as run:
             events = companion.auto_events(95.0, timeout=30)
         self.assertEqual([event["event"] for event in events], ["poll", "no-switch"])
         self.assertEqual(run.call_args.args[0], ["/bin/cswap", "auto", "--once", "--json", "--strategy", "consume-first",
                                                  "--cooldown", "120", "--threshold", "95"])
         failed = types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
-        with mock.patch.object(companion, "configuration", return_value={"cswap": "/bin/cswap"}), \
+        with mock.patch.object(companion, "configuration", return_value={"engine": "/bin/cswap"}), \
                 mock.patch.object(companion.subprocess, "run", return_value=failed):
             with self.assertRaises(RuntimeError):
                 companion.auto_events(95.0, timeout=30)

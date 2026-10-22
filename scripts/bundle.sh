@@ -51,6 +51,11 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
 cp -R "$ROOT/browser-extension" "$CONTENTS/Resources/BrowserExtension"
 cp -R "$ROOT/bridge" "$CONTENTS/Resources/Bridge"
+# The account engine: its package and launcher, without the test suite.
+mkdir -p "$CONTENTS/Resources/Engine"
+cp -R "$ROOT/engine/switch_engine" "$CONTENTS/Resources/Engine/switch_engine"
+cp "$ROOT/engine/claude-switcher-engine" "$CONTENTS/Resources/Engine/claude-switcher-engine"
+find "$CONTENTS/Resources/Engine" -name __pycache__ -prune -exec rm -rf {} +
 mkdir -p "$CONTENTS/Resources/History"
 cp "$ROOT/history/history.mjs" "$ROOT/history/copy.mjs" "$ROOT/history/transplant.mjs" "$CONTENTS/Resources/History/"
 cp "$ROOT/assets/setup.html" "$CONTENTS/Resources/setup.html"

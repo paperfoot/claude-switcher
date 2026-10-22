@@ -46,6 +46,13 @@ struct CoordinatedSwitchingTests {
         #expect(!partial.isFinished(by: partial))
     }
 
+    @Test func aSetupFromBeforeTheInHouseEngineStillLoads() throws {
+        let old = #"{"enabled":true,"python":"/p","helper":"/h","cswap":"/old/cswap","claude":"/c"}"#
+        #expect(try JSONDecoder().decode(CoordinatedSetup.self, from: Data(old.utf8)).engine == "/old/cswap")
+        let new = #"{"enabled":true,"python":"/p","helper":"/h","engine":"/new/engine"}"#
+        #expect(try JSONDecoder().decode(CoordinatedSetup.self, from: Data(new.utf8)).engine == "/new/engine")
+    }
+
     @Test func anAutomaticPartialSwitchIsFinishedBySavedStateForItsSelection() throws {
         let auto = try JSONDecoder().decode(AutoSwitchResult.self, from: Data(
             #"{"ok":true,"switched":true,"codeEmail":"a@example.com","browserReady":false,"browserError":"web_unavailable","selectedAt":100.5}"#.utf8))
@@ -99,7 +106,7 @@ struct CoordinatedSwitchingTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         let script = directory.appendingPathComponent("helper.sh")
         try Data(body.utf8).write(to: script)
-        return (CoordinatedSetup(enabled: true, python: "/bin/sh", helper: script.path, cswap: "/usr/bin/false"), directory)
+        return (CoordinatedSetup(enabled: true, python: "/bin/sh", helper: script.path, engine: "/usr/bin/false"), directory)
     }
 
     @Test func unreadableOutputThrowsWithABoundedStderrTail() throws {

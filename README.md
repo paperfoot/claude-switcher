@@ -44,7 +44,7 @@ A small native menu bar app for Macs with more than one Claude or Codex subscrip
 
    ```sh
    git clone https://github.com/paperfoot/claude-switcher.git && cd claude-switcher
-   uv tool install 'claude-swap==0.26.0'
+   uv python install 3.13
    CODESIGN_IDENTITY=- make install && python3 scripts/setup-coordinated.py
    open -a "Claude Switcher"
    ```
@@ -85,7 +85,7 @@ The menu bar menu shows every account with its usage. Click an email to switch. 
 
 Type `auto` in the palette and turn on **Auto-switch at limit**. The switcher keeps Claude Code and every connected Chrome profile on the account whose weekly limit resets soonest and still has room, so quota that is about to reset gets used instead of expiring. An account counts as spent at 98% of its five-hour or weekly limit; then the switcher moves on to the next account in reset order, so long sessions keep going.
 
-- The decision comes from [claude-swap's auto-switch engine](https://github.com/realiti4/claude-swap): it refreshes the target's login first, never lands on an account that is near its own limit, and avoids switching back and forth.
+- The decision comes from the switcher's own account engine: it refreshes the target's login first, never lands on an account that is near its own limit, and avoids switching back and forth.
 - Usage is polled at a pace Anthropic's usage endpoint accepts (roughly one request per account every few minutes, faster near the limit), so turning this on does not get accounts rate-limited.
 - It never overrides a choice you just made: there is no automatic switch in the ten minutes after you pick an account yourself.
 - Every automatic switch shows in the menu bar and in the menu, with the time.
@@ -131,7 +131,7 @@ You need:
 
 - macOS 14 or later, with a Swift 6 toolchain
 - [Claude Code](https://code.claude.com/docs/en/setup)
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) and `claude-swap==0.26.0`, for coordinated Claude switching
+- [uv](https://docs.astral.sh/uv/getting-started/installation/), for a standalone Python 3.12 or newer (`uv python install 3.13`). The account engine and the Chrome bridge use Python's standard library only, with no third-party packages
 - Google Chrome, for the companion extension
 - The official Codex desktop app, for Codex switching
 - Node.js 22 or newer, only for Desktop history sharing
@@ -139,7 +139,7 @@ You need:
 ```sh
 git clone https://github.com/paperfoot/claude-switcher.git
 cd claude-switcher
-uv tool install 'claude-swap==0.26.0'
+uv python install 3.13
 CODESIGN_IDENTITY=- make install
 python3 scripts/setup-coordinated.py
 open -a "Claude Switcher"
@@ -147,7 +147,7 @@ open -a "Claude Switcher"
 
 This builds **Claude Switcher.app** on your Mac, signs it ad hoc and copies it to `/Applications`. There is no notarized download yet. Quit an older copy before you replace it.
 
-The setup script imports the Claude Code accounts already listed in `~/.config/claude-switcher/config.json` and registers the Chrome companion's native host. It leaves the active Code account unchanged and never overwrites an account already saved in claude-swap.
+The setup script imports the Claude Code accounts already listed in `~/.config/claude-switcher/config.json` and registers the Chrome companion's native host. It installs the account engine from the app, leaves the active Code account unchanged and never overwrites an account already saved.
 
 To start the switcher at login, use the launch-at-login toggle in the palette, or run the app's executable with `--login-item on`.
 
@@ -201,7 +201,7 @@ claude-accounts chrome-status             # verified account in each connected C
 claude-accounts chrome work@example.com --expect-profiles 2
 claude-accounts claude work@example.com   # Chrome and Claude Code together
 claude-accounts extension work@example.com  # re-sign Chrome's official Claude extension only
-claude-accounts refresh-code              # sync a stale Code credential file after `cswap add`
+claude-accounts refresh-code              # sync a stale Code credential file after adding an account by hand
 claude-accounts logs                      # the latest 50 switch events
 ```
 
@@ -222,11 +222,11 @@ APP="/Applications/Claude Switcher.app/Contents/MacOS/claude-switcher"
 
 ## How it works and what stays private
 
-- **Claude Code:** [claude-swap 0.26.0](https://github.com/realiti4/claude-swap/releases/tag/v0.26.0) saves and restores the default Claude Code login and works with Claude's credential locks. Code keeps its usual history directory.
+- **Claude Code:** the switcher's account engine (`engine/`, which began as claude-swap 0.26.0) saves and restores the default Claude Code login and works with Claude's credential locks. Code keeps its usual history directory.
 - **Chrome:** a Manifest V3 companion saves Claude.ai sessions in the macOS Keychain through a local native-messaging host. It checks the email before saving and after switching, and restores the previous cookies if a switch fails. It touches Claude.ai cookies only, never Google accounts, Gmail or other sites. All Claude.ai tabs in one Chrome profile share one login.
 - **Codex:** the official Codex runtime handles sign-in, identity checks and usage. Saved logins live in the Keychain.
 - **Connection:** the app reaches Chrome's native host over a private local Unix socket. It opens no listening network port and uses no remote debugging.
-- **Files:** settings and the usage cache live in `~/.config/claude-switcher/` with private permissions. claude-swap keeps its own account store in `~/.claude-swap-backup/`.
+- **Files:** settings and the usage cache live in `~/.config/claude-switcher/` with private permissions. The account engine keeps its store in `~/.claude-swap-backup/`, where claude-swap kept it, so accounts saved there carry over.
 - **Logs:** the switch log stores results, timings, the failing step and HTTP status. It never stores tokens, cookies, account emails or URLs. Command output such as `--accounts` includes account emails and usage, but no tokens or cookies.
 
 - **Claude in Chrome (the official extension agents use for browser control):** after Chrome switches, the companion turns the official extension off and on again. That clears only its session; its shortcuts and scheduled tasks stay. If it already belongs to the selected account it reconnects by itself. Otherwise the switcher presses its **Log in** button and approves Anthropic's own consent page, but only for the official extension and only when the page shows the selected email. Claude Code's browser tools then reach Chrome on the new account. Pressing **Log in** needs macOS Accessibility for Claude Switcher; macOS asks once.
@@ -249,7 +249,7 @@ Desktop sign-ins are separate from Chrome and Claude Code. Switching a Claude ac
 - **“Claude extension needs attention”, or agents report no connected browser.** Allow Claude Switcher in System Settings → Privacy & Security → Accessibility, then run `claude-accounts claude <email>` again or select the account in the palette. To repair only the extension, run `claude-accounts extension <email>`.
 - **Code switched but Chrome did not.** The verified Code selection stays. Fix Chrome, then select the account again. In JSON output, `ok: true` with `browserReady: false` means the same thing.
 - **“Sign in needed”.** The saved login expired or was revoked. For Chrome, sign in again through the companion's **Add another account**. For Codex, type `reconnect codex` and the account in the palette.
-- **Claude Code still uses the old account.** Wait about 30 seconds for its Keychain cache. After a manual `cswap add`, run `claude-accounts refresh-code`.
+- **Claude Code still uses the old account.** Wait about 30 seconds for its Keychain cache. After adding an account by hand, run `claude-accounts refresh-code`.
 - **macOS asks whether Claude Switcher may use a Keychain item.** Since 1.0.1 the switcher keeps its saved logins through Apple's `security` tool, which never asks. Updating from 1.0.0 can ask once per saved Codex login while it moves them over; after that, rebuilds and updates do not ask again.
 - **“Chrome login … expires”.** Saved Claude.ai logins last a few weeks. The menu warns three days ahead; sign in to that account in Chrome once and the companion saves the fresh login.
 - **Find out what happened.** Type `switch log` in the palette, or run `claude-accounts logs`. Redact emails and paths before you post anything in an issue.
@@ -270,7 +270,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 
 ## Credits
 
-Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau's Claude Switcher](https://github.com/kevinchau/claude-switcher), with original history and MIT attribution preserved. Coordinated Code switching uses [Onur Cetinkol's claude-swap](https://github.com/realiti4/claude-swap), also MIT licensed. The Codex app-server RPC transport adapts code from [liuzhao1225/codex-account-switcher](https://github.com/liuzhao1225/codex-account-switcher) under the MIT license, for the RPC transport only; see [ThirdParty/CodexAccountSwitcher-LICENSE](ThirdParty/CodexAccountSwitcher-LICENSE). Desktop history sharing adapts atomic writes, process checks, locking and legacy recovery from [claude-transplant 4.1.0](https://github.com/vitaliyhayda/claude-transplant), MIT licensed; see the [pinned source and local changes](ThirdParty/ClaudeTransplant-NOTICE.md).
+Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau's Claude Switcher](https://github.com/kevinchau/claude-switcher), with original history and MIT attribution preserved. The account engine began as [Onur Cetinkol's claude-swap](https://github.com/realiti4/claude-swap) 0.26.0, MIT licensed, and is maintained here; see the [pinned source and local changes](ThirdParty/claude-swap-NOTICE.md). The Codex app-server RPC transport adapts code from [liuzhao1225/codex-account-switcher](https://github.com/liuzhao1225/codex-account-switcher) under the MIT license, for the RPC transport only; see [ThirdParty/CodexAccountSwitcher-LICENSE](ThirdParty/CodexAccountSwitcher-LICENSE). Desktop history sharing adapts atomic writes, process checks, locking and legacy recovery from [claude-transplant 4.1.0](https://github.com/vitaliyhayda/claude-transplant), MIT licensed; see the [pinned source and local changes](ThirdParty/ClaudeTransplant-NOTICE.md).
 
 ## License
 

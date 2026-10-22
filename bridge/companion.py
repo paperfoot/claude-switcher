@@ -52,6 +52,12 @@ def configuration():
     return json.loads((BASE / 'coordinated.json').read_text())
 
 
+def engine():
+    """The account engine's launcher. Setups before 1.2 named claude-swap's `cswap`."""
+    setup = configuration()
+    return setup.get('engine') or setup['cswap']
+
+
 def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix='.switch-')
@@ -96,7 +102,7 @@ def validate_email(email):
 
 
 def run_backend(*args, timeout=deadlines.CSWAP_TIMEOUT):
-    result = subprocess.run([configuration()['cswap'], *args], env=clean_environment(),
+    result = subprocess.run([engine(), *args], env=clean_environment(),
                             stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError('code_switch_failed')
@@ -127,7 +133,7 @@ def switch_code(email, deadline=None, reserve=0.0):
     run_backend('switch', email, '--json', timeout=timeout)
     if code_identity(timeout=deadline.timeout(deadlines.IDENTITY_TIMEOUT, reserve)) != email:
         raise RuntimeError('code_identity_mismatch')
-    # cswap deliberately skips writes for an already-active account. A manual login
+    # The engine deliberately skips writes for an already-active account. A manual login
     # can leave its existing file cache behind even though Keychain is current.
     # The repair takes up to ~25 s (Keychain, profile lookup, Claude's lock).
     if deadline.remaining() < deadlines.CACHE_REPAIR_MINIMUM:
@@ -271,7 +277,7 @@ def select_account(email, include_browser=True, verified_browser=False, deadline
         except CodeSwitchNotStarted:
             return {'ok': False, 'error': 'code_switch_failed'}
         except Exception:
-            # cswap rolls back failed writes; verify/repair if activation failed after a write.
+            # The engine rolls back failed writes; verify/repair if activation failed after a write.
             if old and old != email:
                 try:
                     switch_code(old, deadline)
@@ -332,16 +338,16 @@ AUTO_COOLDOWN = 120
 
 
 def auto_events(threshold, timeout):
-    """One `cswap auto --once` decision as JSON events. claude-swap paces its own usage
+    """One `auto --once` engine decision as JSON events. The engine paces its own usage
     polls through its usage store, so calling this every minute stays within rate limits.
 
     consume-first moves Code to the account whose weekly window resets soonest while it
     still has room, so quota that is about to reset is spent before quota that keeps.
     Room means usage under `threshold`, which is why the app's default sits near the limit.
     A target can arrive just under it, so the cooldown between proactive moves is two
-    minutes rather than claude-swap's five, or the account could run into its hard limit first.
+    minutes rather than the engine's default five, or the account could run into its hard limit first.
     """
-    result = subprocess.run([configuration()['cswap'], 'auto', '--once', '--json', '--strategy', 'consume-first',
+    result = subprocess.run([engine(), 'auto', '--once', '--json', '--strategy', 'consume-first',
                              '--cooldown', str(AUTO_COOLDOWN), '--threshold', f'{threshold:g}'],
                             env=clean_environment(), stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
     # Exit 0: switched. 2: nothing to do. 3: no viable target. 1: the engine failed.
@@ -367,7 +373,7 @@ def safe_identity(deadline):
 
 
 def auto_tick(threshold, deadline=None, events=None):
-    """Let claude-swap decide whether Code should move; when it does, Chrome follows.
+    """Let the engine decide whether Code should move; when it does, Chrome follows.
 
     Whether Code moved is judged from the actual login before and after the engine runs,
     so a timed-out or unreadable engine reply cannot leave Chrome behind unnoticed.
