@@ -87,7 +87,7 @@ Type `auto` in the palette and turn on **Auto-switch at limit**. Claude Code and
 
 Before that, the switcher moves early only to save quota that would otherwise expire: an account whose weekly limit resets within six hours, or within an hour per percent it has left. It never makes such an early move:
 
-- within an hour of an account you picked yourself, or
+- while Claude Code is still on an account you picked yourself (your pick stays until it runs low), or
 - while any Claude session has used Claude in Chrome or computer use in the last ten minutes, because a switch signs Claude in Chrome out and breaks the run.
 
 Running out still moves you, even then: at the limit the run would stop anyway.
