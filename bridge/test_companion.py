@@ -1517,21 +1517,39 @@ class AutoTickTests(unittest.TestCase):
             result = companion.auto_tick(95, events=self.switched_to(TARGET_EMAIL))
         self.assertEqual(result, {"ok": True, "switched": False, "reason": "switch_in_progress"})
 
-    def test_a_manual_choice_holds_for_an_hour_and_an_automatic_one_does_not(self):
+    def test_a_manual_choice_holds_until_it_runs_low_and_an_automatic_one_does_not(self):
         self.base.mkdir(parents=True, exist_ok=True)
         now = 10_000.0
         with mock.patch.object(companion, "agents_driving_browser", return_value=False):
             self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": now - 1800}))
-            self.assertEqual(companion.hold_reason(now), "manual")
-            self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": now - 3700}))
-            self.assertIsNone(companion.hold_reason(now))
+            self.assertEqual(companion.hold_reason(TARGET_EMAIL, now), "manual")
+            # Hours later the pick still stands.
+            self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": now - 9 * 3600}))
+            self.assertEqual(companion.hold_reason(TARGET_EMAIL.upper(), now), "manual")
+            # Code moved elsewhere since, so the pick no longer describes it.
+            self.assertIsNone(companion.hold_reason(OLD_EMAIL, now))
             self.state.write_text(json.dumps({"ok": True, "codeEmail": TARGET_EMAIL, "selectedAt": now - 60,
                                               "automatic": True}))
-            self.assertIsNone(companion.hold_reason(now))
+            self.assertIsNone(companion.hold_reason(TARGET_EMAIL, now))
         with mock.patch.object(companion, "agents_driving_browser", return_value=True):
-            self.assertEqual(companion.hold_reason(now), "agents")
+            self.assertEqual(companion.hold_reason(TARGET_EMAIL, now), "agents")
         (self.base / "hold").touch()
-        self.assertEqual(companion.hold_reason(now), "pinned")
+        self.assertEqual(companion.hold_reason(TARGET_EMAIL, now), "pinned")
+
+    def test_a_decision_is_logged_once_until_it_changes(self):
+        events = [{"event": "poll", "active": {"number": 2, "email": OLD_EMAIL}, "headroomPct": {"2": 12.0}},
+                  {"event": "no-switch", "reason": "held"}]
+        with mock.patch.object(companion, "auto_events", return_value=events), \
+                mock.patch.object(companion, "hold_reason", return_value="manual"), \
+                mock.patch.object(companion.event_log, "emit") as emit:
+            self.code_identity.side_effect = None
+            self.code_identity.return_value = OLD_EMAIL
+            companion.auto_tick(95)
+            companion.auto_tick(95)
+            decisions = [call for call in emit.call_args_list if call.args[1] == "auto_decision"]
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0].kwargs, {"reason": "held", "account": OLD_EMAIL, "hold": "manual",
+                                                    "used": 88})
 
     def test_recent_browser_or_computer_use_by_any_session_is_seen(self):
         home = Path(self.temporary.name) / "home"

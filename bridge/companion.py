@@ -341,8 +341,6 @@ def extension_follow(email):
 
 AUTO_THRESHOLD_RANGE = (50.0, 99.9)
 AUTO_COOLDOWN = 120
-# A switch made from the menu or palette holds for this long: optional moves wait.
-MANUAL_HOLD = 60 * 60
 # Agents driving Chrome or the computer within this window hold optional moves too:
 # a switch signs Claude in Chrome out and breaks the run.
 AGENT_TOOL_WINDOW = 10 * 60
@@ -426,22 +424,38 @@ def agents_driving_browser(now=None):
     return False
 
 
-def hold_reason(now=None):
+def hold_reason(current=None, now=None):
     """Why optional moves should wait this tick: 'pinned', 'manual', 'agents', or None.
 
+    An account picked from the menu or palette stays until it runs low, however long
+    that takes: the owner picks a roomy account so agents can drive Chrome for hours.
     Leaving an account at the threshold is never held: at its limit the run breaks anyway.
     """
     now = time.time() if now is None else now
     if (BASE / 'hold').exists():
         return 'pinned'  # "Hold this account" in the palette
     state = read_state()
-    selected_at = state.get('selectedAt')
-    if (state.get('automatic') is not True and isinstance(selected_at, (int, float))
-            and not isinstance(selected_at, bool) and 0 <= now - selected_at < MANUAL_HOLD):
+    picked = state.get('codeEmail')
+    if (state.get('automatic') is not True and isinstance(picked, str)
+            and (current is None or picked.lower() == current.lower())):
         return 'manual'
     if agents_driving_browser(now):
         return 'agents'
     return None
+
+
+def note_decision(decision):
+    """Log an auto-switch decision when it differs from the last one, so a quiet day
+    costs a few lines and a missed switch can still be explained afterwards."""
+    path = BASE / 'auto-decision.json'
+    try:
+        last = json.loads(path.read_text())
+    except (OSError, ValueError):
+        last = None
+    if decision == last:
+        return
+    atomic_json(path, decision)
+    event_log.emit(BASE, 'auto_decision', **decision)
 
 
 def auto_events(threshold, timeout, hold=False):
@@ -474,6 +488,16 @@ def auto_events(threshold, timeout, hold=False):
     return events
 
 
+def active_used(events, email):
+    """The active account's binding usage in whole percent, from the engine's poll event."""
+    poll = next((event for event in events if event.get('event') == 'poll'), {})
+    active = poll.get('active') if isinstance(poll.get('active'), dict) else {}
+    headroom = (poll.get('headroomPct') or {}).get(str(active.get('number')))
+    if not isinstance(headroom, (int, float)) or str(active.get('email', '')).lower() != (email or ''):
+        return None
+    return round(100 - headroom)
+
+
 def safe_identity(deadline):
     """The current Code login, or None when it cannot be read in time."""
     try:
@@ -503,7 +527,7 @@ def auto_tick(threshold, deadline=None, events=None):
         engine_failed = False
         hold = None
         if events is None:
-            hold = hold_reason()
+            hold = hold_reason(previous)
             try:
                 events = auto_events(threshold, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT), hold=hold is not None)
             except (RuntimeError, OSError, subprocess.TimeoutExpired, deadlines.DeadlineExceeded):
@@ -517,10 +541,16 @@ def auto_tick(threshold, deadline=None, events=None):
                 event_log.emit(BASE, 'switch_finished', scope='auto', ok=False, error='code_switch_failed')
                 return {'ok': False, 'switched': False, 'error': 'code_switch_failed', 'trigger': trigger}
             if engine_failed:
-                return {'ok': True, 'switched': False, 'reason': 'auto_switch_failed'}
-            if any(event.get('event') == 'all-exhausted' for event in events):
-                return {'ok': True, 'switched': False, 'reason': 'all_exhausted'}
-            reason = next((str(event.get('reason')) for event in events if event.get('event') == 'no-switch'), 'no_action')
+                reason = 'auto_switch_failed'
+            elif any(event.get('event') == 'all-exhausted' for event in events):
+                reason = 'all_exhausted'
+            else:
+                reason = next((str(event.get('reason')) for event in events if event.get('event') == 'no-switch'),
+                              'no_action')
+            note_decision({'reason': reason, 'account': previous, 'hold': hold,
+                           'used': active_used(events, previous)})
+            if reason in ('auto_switch_failed', 'all_exhausted'):
+                return {'ok': True, 'switched': False, 'reason': reason}
             return {'ok': True, 'switched': False, 'reason': reason, **({'hold': hold} if hold else {})}
         # Code moved. Chrome follows the login Code actually has now.
         moved = {'switched': True, 'codeEmail': current, 'previousEmail': previous, 'trigger': trigger}
