@@ -103,6 +103,12 @@ NO_RESET_FALLBACK_S = 300.0
 # falls back to normal unhealthy counting.
 IDLE_HOLD_MAX_S = 30 * 60.0
 
+# The unhealthy-tick count and idle-hold start live in the state file between
+# ticks, so `auto --once` (one process per tick) escalates like the loop does.
+# Without this every process starts at zero and failover never comes. A record
+# older than this describes a machine that slept or stopped ticking; start over.
+HEALTH_MEMORY_S = 10 * 60.0
+
 # Anti-flap margin for the every-account-above-threshold escape, measured on
 # the axis that escape ranks by: a target must come back at least this much
 # sooner than the account we are leaving. Five minutes is comfortably longer
@@ -717,6 +723,31 @@ class AutoSwitchEngine:
             atomic_write_json(self.state_path, state)
             return state
 
+    def _restore_health(self) -> None:
+        health = self._read_state().get("health")
+        if not isinstance(health, dict):
+            return
+        at = health.get("at")
+        if not isinstance(at, (int, float)) or not 0 <= self.clock() - at <= HEALTH_MEMORY_S:
+            return
+        if health.get("account") != self.switcher.current_account_number():
+            return  # counted against an account Code has since left
+        ticks = health.get("unhealthyTicks")
+        if isinstance(ticks, int) and not isinstance(ticks, bool) and ticks >= 0:
+            self._unhealthy_ticks = ticks
+        since = health.get("idleHoldSince")
+        self._idle_hold_since = since if isinstance(since, (int, float)) and not isinstance(since, bool) else None
+
+    def _save_health(self) -> None:
+        if self.dry_run:
+            return
+        try:
+            health = {"at": self.clock(), "account": self.switcher.current_account_number(),
+                      "unhealthyTicks": self._unhealthy_ticks, "idleHoldSince": self._idle_hold_since}
+            self._mutate_state(lambda state: state.__setitem__("health", health))
+        except Exception:  # best-effort: a lost count only delays failover
+            _logger.debug("Could not record auto-switch health", exc_info=True)
+
     # -- quarantine -----------------------------------------------------------
 
     def _quarantine(self, number: str, email: str, reason: str) -> None:
@@ -885,7 +916,11 @@ class AutoSwitchEngine:
     def tick(self) -> TickOutcome:
         """Evaluate once: poll usage, maybe switch. Never raises."""
         try:
-            return self._tick_inner()
+            self._restore_health()
+            try:
+                return self._tick_inner()
+            finally:
+                self._save_health()
         except ClaudeSwitchError as e:
             self._emit(ErrorEvent(message=str(e), transient=True))
             return TickOutcome.ERROR

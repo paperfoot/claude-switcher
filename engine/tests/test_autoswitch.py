@@ -13,6 +13,7 @@ import pytest
 
 from switch_engine import oauth, poll_policy
 from switch_engine.autoswitch import (
+    HEALTH_MEMORY_S,
     IDLE_HOLD_MAX_S,
     NO_RESET_FALLBACK_S,
     RECOVERY_HORIZON_S,
@@ -673,6 +674,31 @@ class TestIdleHold:
         switch = next(e for e in harness.events if isinstance(e, SwitchEvent))
         assert switch.trigger == "failover"
         assert harness.engine._idle_hold_since is None
+
+
+    def test_one_process_per_tick_still_fails_over(self, harness):
+        """`auto --once` builds a fresh engine every tick. The unhealthy count
+        must survive in the state file or failover never arrives."""
+        foreign = {
+            "1": USAGE_FOREIGN_CREDENTIAL, "2": _usage(10), "3": _usage(20),
+        }
+        outcomes = []
+        for _ in range(3):
+            harness.engine = harness._make_engine()
+            outcomes.append(harness.tick_with_usage(foreign))
+            harness.clock.advance(60)
+        assert outcomes == [TickOutcome.NO_ACTION, TickOutcome.NO_ACTION, TickOutcome.SWITCHED]
+
+    def test_a_stale_unhealthy_count_is_forgotten(self, harness):
+        foreign = {
+            "1": USAGE_FOREIGN_CREDENTIAL, "2": _usage(10), "3": _usage(20),
+        }
+        harness.tick_with_usage(foreign)
+        harness.tick_with_usage(foreign)
+        harness.clock.advance(HEALTH_MEMORY_S + 1)  # the Mac slept
+        harness.engine = harness._make_engine()
+        assert harness.tick_with_usage(foreign) is TickOutcome.NO_ACTION
+        assert harness.engine._unhealthy_ticks == 1
 
 
 class TestAdaptiveScheduler:
