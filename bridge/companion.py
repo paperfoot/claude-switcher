@@ -455,7 +455,8 @@ def note_decision(decision):
     if decision == last:
         return
     atomic_json(path, decision)
-    event_log.emit(BASE, 'auto_decision', **decision)
+    # The log keeps codes and counts only; the account stays in the private file.
+    event_log.emit(BASE, 'auto_decision', **{key: value for key, value in decision.items() if key != 'account'})
 
 
 def auto_events(threshold, timeout, hold=False):

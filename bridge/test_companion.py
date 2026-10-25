@@ -1548,8 +1548,7 @@ class AutoTickTests(unittest.TestCase):
             companion.auto_tick(95)
             decisions = [call for call in emit.call_args_list if call.args[1] == "auto_decision"]
             self.assertEqual(len(decisions), 1)
-            self.assertEqual(decisions[0].kwargs, {"reason": "held", "account": OLD_EMAIL, "hold": "manual",
-                                                    "used": 88})
+            self.assertEqual(decisions[0].kwargs, {"reason": "held", "hold": "manual", "used": 88})
 
     def test_recent_browser_or_computer_use_by_any_session_is_seen(self):
         home = Path(self.temporary.name) / "home"

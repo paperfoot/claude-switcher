@@ -150,6 +150,18 @@ class EventLogTests(unittest.TestCase):
             assert secret not in persisted
 
 
+    def test_an_auto_decision_keeps_its_codes_and_drops_anything_else(self) -> None:
+        base = self.tmp_path / "decisions"
+        event_log.emit(base, "auto_decision", reason="below-threshold", hold="manual", used=42)
+        event_log.emit(base, "auto_decision", reason="sk_live_FAKE token", hold="someone@example.invalid",
+                       used=420, account="private.person@example.invalid")
+        kept, scrubbed = event_log.recent(base, limit=2)
+        assert {k: v for k, v in kept.items() if k != "at"} == {
+            "event": "auto_decision", "reason": "below-threshold", "hold": "manual", "used": 42}
+        assert set(scrubbed) == {"at", "event"}
+        persisted = (base / "events.jsonl").read_text(encoding="utf-8")
+        assert "FAKE" not in persisted and "example.invalid" not in persisted
+
     def test_log_directory_and_files_are_private(self) -> None:
         tmp_path = self.tmp_path
         base = tmp_path / "private-log"

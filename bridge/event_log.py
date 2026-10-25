@@ -4,11 +4,12 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import stat
 
 MAX_BYTES = 262144
 EVENTS = {'switch_started', 'switch_finished', 'browser_profile_finished', 'native_error', 'browser_error', 'code_cache_synced',
-          'official_extension_finished', 'browser_recovered', 'login_check_finished'}
+          'official_extension_finished', 'browser_recovered', 'login_check_finished', 'auto_decision'}
 ERRORS = set('''unknown_error switch_in_progress web_login_needed web_login_expired
 web_switch_failed web_restore_failed web_identity_mismatch web_unavailable
 code_switch_failed code_restore_failed code_only_after_web_failure
@@ -22,6 +23,8 @@ native_timeout unauthorized forbidden network_error rate_limited server_error
 official_unavailable extension_follow_failed extension_not_signed_in consent_refused
 accessibility_needed timeout helper_missing helper_timeout helper_failed'''.split())
 STEPS = {'capture_session', 'clear_cookies', 'restore_cookies', 'verify_identity', 'activate_code', 'save_session', 'connect'}
+HOLDS = {'pinned', 'manual', 'agents'}
+REASON = re.compile(r'[a-z][a-z_-]{0,39}')
 PROBES = {'verified', 'unauthorized', 'forbidden', 'network_error', 'rate_limited', 'server_error', 'invalid_response', 'identity_mismatch', 'signed_out'}
 
 
@@ -45,6 +48,12 @@ def _record(event, fields):
         elif key in ('durationMs', 'profileCount', 'expectedProfiles', 'opened', 'checked', 'expired') and type(value) is int and 0 <= value <= 2**31:
             record[key] = value
         elif key == 'httpStatus' and type(value) is int and 100 <= value <= 599:
+            record[key] = value
+        elif key == 'reason' and isinstance(value, str) and REASON.fullmatch(value):
+            record[key] = value  # an engine decision code such as 'held' or 'below-threshold'
+        elif key == 'hold' and value in HOLDS:
+            record[key] = value
+        elif key == 'used' and type(value) is int and 0 <= value <= 100:
             record[key] = value
     return record
 
