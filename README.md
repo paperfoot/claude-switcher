@@ -2,7 +2,7 @@
 
 # Headroom
 
-### Your agents never stop at a usage limit
+### One account's limit no longer stops your agents
 
 When one Claude account runs low, Claude Code and Claude in Chrome move to an account with room, and stay put while your agents drive Chrome. One palette for every Claude and Codex account.
 
