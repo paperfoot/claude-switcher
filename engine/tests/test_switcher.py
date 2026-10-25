@@ -2419,6 +2419,26 @@ class TestActiveAccountRefresh:
         ]
         assert len(warnings) == 1
 
+    def test_live_credential_of_another_slot_repoints_the_config(
+        self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict,
+    ):
+        """~/.claude.json names slot 1 while the live credential is slot 2's
+        (an outside writer renamed the login). The config is pointed at slot 2,
+        the account Claude Code actually spends, so the next tick judges the
+        right quota; no credential or backup is written."""
+        switcher = self._switcher(sample_sequence_data)
+        owner = {"uuid": "uuid-2", "email": "account2@example.com", "organizationUuid": None}
+        stored = json.dumps({"oauthAccount": {"emailAddress": "account2@example.com",
+                                              "accountUuid": "uuid-2"}})
+        with patch.object(switcher, "_read_account_config", return_value=stored):
+            result, write_backup, _ = self._fresh_drift_pass(switcher, owner)
+
+        assert result.sentinel == USAGE_FOREIGN_CREDENTIAL
+        write_backup.assert_not_called()
+        config = json.loads(mock_claude_config.read_text())
+        assert config["oauthAccount"]["emailAddress"] == "account2@example.com"
+        assert switcher.current_account_number() == "2"
+
     def test_fresh_probe_failure_skips_resync_and_retries_next_pass(
         self, temp_home: Path, mock_claude_config: Path, sample_sequence_data: dict
     ):

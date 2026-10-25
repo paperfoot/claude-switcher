@@ -4538,6 +4538,66 @@ class ClaudeAccountSwitcher:
             retry_after_s=outcome.retry_after_s,
         )
 
+    def _repoint_config_to_live_owner(
+        self,
+        account_num: str,
+        email: str,
+        org_uuid: str,
+        fp: str,
+        resolved: dict,
+    ) -> bool:
+        """Point ``~/.claude.json`` at the managed account the live credential is.
+
+        Claude Code spends whatever the live credential is; ``oauthAccount``
+        only names it. Something outside cswap (seen: a long-running session
+        saving its config) can rewrite that name to another account while the
+        credential stays put. Every decision then reads the wrong slot: the
+        live quota is polled twice, once under each name, until the usage
+        endpoint rate-limits both, and the account actually in use runs out
+        unseen. When the profile oracle has just attributed the live
+        credential to another managed slot, write that slot's stored
+        ``oauthAccount`` back. Credentials and backups are not touched.
+        Returns True when the config now names the owner.
+        """
+        data = self._get_sequence_data() or {}
+        owner = next(
+            (
+                str(num) for num in data.get("sequence", [])
+                if str(num) != account_num
+                and self._resolved_matches_slot_identity(str(num), resolved) is True
+            ),
+            None,
+        )
+        if owner is None:
+            return False  # an unmanaged login: never guess a slot for it
+        stored = self._read_account_config(owner, self.account_email(owner))
+        try:
+            oauth_section = json.loads(stored).get("oauthAccount") if stored else None
+        except (ValueError, AttributeError):
+            oauth_section = None
+        if not isinstance(oauth_section, dict) or not oauth_section.get("emailAddress"):
+            return False
+        with FileLock(self.lock_file), claude_credentials_lock(), claude_config_lock():
+            # Both re-checked under the locks: a switch or /login in the gap
+            # leaves nothing here to repair.
+            if not self._live_identity_matches(email, org_uuid):
+                return False
+            live = self._read_credentials()
+            if not live or (oauth.credential_fingerprint(live) or "") != fp:
+                return False
+            config_path = self._get_claude_config_path()
+            config = self._read_json(config_path)
+            if not config:
+                return False
+            config["oauthAccount"] = oauth_section
+            self._write_json(config_path, config)
+        self._logger.warning(
+            "Claude Code's live login is Account-%s but ~/.claude.json named "
+            "Account-%s; pointed the config at Account-%s.",
+            owner, account_num, owner,
+        )
+        return True
+
     def _resync_rotated_backup(
         self, account_num: str, email: str, org_uuid: str, creds: str
     ) -> None:
@@ -4617,6 +4677,10 @@ class ClaudeAccountSwitcher:
                     self._lineage_key(account_num, email, fp)
                 ] = match
                 if not match:
+                    if self._repoint_config_to_live_owner(
+                        account_num, email, org_uuid, fp, resolved
+                    ):
+                        return
                     key = (account_num, email, "resync")
                     if key not in self._provenance_warned:
                         self._provenance_warned.add(key)
