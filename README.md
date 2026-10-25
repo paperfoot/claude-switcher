@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/brand/logo.png" width="560" alt="Headroom">
+
 # Headroom
 
 ### One account's limit no longer stops your agents

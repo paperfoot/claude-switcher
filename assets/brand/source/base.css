@@ -1,0 +1,7 @@
+@font-face { font-family: "Archivo"; src: url("Archivo-var.woff2") format("woff2"); font-weight: 100 900; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: "Archivo", sans-serif; -webkit-font-smoothing: antialiased; }
+.lock { display: flex; align-items: center; }
+.mk { position: relative; border-style: solid; overflow: hidden; }
+.mk i { position: absolute; display: block; transform-origin: center bottom; }
+.word { font-weight: 900; letter-spacing: -0.055em; line-height: 0.86; white-space: nowrap; }

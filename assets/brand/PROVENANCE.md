@@ -1,5 +1,16 @@
 # Brand art provenance
 
+## Headroom (25 October 2026)
+
+`logo.png` (1600x400) and `social-preview.png` (1280x640) are rendered from HTML in `source/`
+with headless Chrome, in the launch video's brand system (`~/Projects/headroom-video`): ink
+`#0D0F11`, signal green `#3DDC84`, paper `#F3F1EA`, Archivo 900 (variable font, SIL OFL, from
+Google Fonts; place `Archivo-var.woff2` next to the HTML to re-render). The mark is the app's
+usage gauge stood upright: filled low, the room above it empty.
+
+## Claude Switcher (12 October 2026, retired)
+
+
 Generated on 12 October 2026 with Codex's native image generation (GPT-Image-2) through
 `codex exec --skip-git-repo-check -s workspace-write`, one call per option. Style reference: the
 chunky extruded block lettering of the Minecraft Java Edition title logo.
