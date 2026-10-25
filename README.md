@@ -1,14 +1,16 @@
 <div align="center">
 
-<img src="assets/brand/logo.png" width="760" alt="Claude Switcher">
+# Headroom
 
-### One palette for every Claude and Codex account
+### Your agents never stop at a usage limit
 
-Switch Claude.ai in Chrome, Claude Code, Claude in Chrome and the Codex app together, and see five-hour and weekly usage at a glance.
+When one Claude account runs low, Claude Code and Claude in Chrome move to an account with room, and stay put while your agents drive Chrome. One palette for every Claude and Codex account.
+
+Switch Claude.ai in Chrome, Claude Code, Claude in Chrome and the Codex app together, and see five-hour and weekly usage at a glance. The app installs as **Claude Switcher**.
 
 <br />
 
-[![Star this repo](https://img.shields.io/github/stars/paperfoot/claude-switcher?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/claude-switcher/stargazers)
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/headroom?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/headroom/stargazers)
 &nbsp;&nbsp;
 [![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
 
@@ -43,7 +45,7 @@ A small native menu bar app for Macs with more than one Claude or Codex subscrip
 1. **Install** the app and its helpers (about two minutes, details in [Install](#install)):
 
    ```sh
-   git clone https://github.com/paperfoot/claude-switcher.git && cd claude-switcher
+   git clone https://github.com/paperfoot/headroom.git && cd headroom
    uv python install 3.13
    CODESIGN_IDENTITY=- make install && python3 scripts/setup-coordinated.py
    open -a "Claude Switcher"
@@ -56,7 +58,7 @@ A small native menu bar app for Macs with more than one Claude or Codex subscrip
 Updates after that need nothing from you; the Chrome companion reloads itself.
 
 > **Let your agent do it.** Paste this into Claude Code:
-> `Install https://github.com/paperfoot/claude-switcher on this Mac following its README, then add my Claude accounts.`
+> `Install https://github.com/paperfoot/headroom on this Mac following its README, then add my Claude accounts.`
 
 ## Use it
 
@@ -143,8 +145,8 @@ You need:
 - Node.js 22 or newer, only for Desktop history sharing
 
 ```sh
-git clone https://github.com/paperfoot/claude-switcher.git
-cd claude-switcher
+git clone https://github.com/paperfoot/headroom.git
+cd headroom
 uv python install 3.13
 CODESIGN_IDENTITY=- make install
 python3 scripts/setup-coordinated.py
@@ -288,7 +290,7 @@ Maintained by [Paperfoot](https://github.com/paperfoot). Forked from [Kevin Chau
 
 **If Claude Switcher saves you a re-login, give it a ⭐ — it helps other people with more than one subscription find it.**
 
-[![Star this repo](https://img.shields.io/github/stars/paperfoot/claude-switcher?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/claude-switcher/stargazers)
+[![Star this repo](https://img.shields.io/github/stars/paperfoot/headroom?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/paperfoot/headroom/stargazers)
 &nbsp;&nbsp;
 [![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
 
