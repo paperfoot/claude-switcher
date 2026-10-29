@@ -341,6 +341,13 @@ def extension_follow(email):
 
 AUTO_THRESHOLD_RANGE = (50.0, 99.9)
 AUTO_COOLDOWN = 120
+# Parallel agents can spend a point a minute, and usage is only polled every minute or
+# three, so a fixed 99% is seen after the limit has already stopped them. The exit moves
+# forward by what the recent pace spends in BURN_LEAD; a landing then needs that much room too.
+BURN_LEAD = 10 * 60
+BURN_WINDOW = 15 * 60
+BURN_MIN_SPAN = 3 * 60
+BURN_MAX_MARGIN = 20.0
 # Agents driving Chrome or the computer within this window hold optional moves too:
 # a switch signs Claude in Chrome out and breaks the run.
 AGENT_TOOL_WINDOW = 10 * 60
@@ -459,6 +466,53 @@ def note_decision(decision):
     event_log.emit(BASE, 'auto_decision', **{key: value for key, value in decision.items() if key != 'account'})
 
 
+def read_burn(now=None):
+    """Recent (time, account number, used %) samples of whichever account Code was on."""
+    now = time.time() if now is None else now
+    try:
+        samples = json.loads((BASE / 'burn.json').read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(samples, list):
+        return []
+    return [sample for sample in samples
+            if isinstance(sample, list) and len(sample) == 3
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in sample)
+            and now - BURN_WINDOW <= sample[0] <= now]
+
+
+def note_burn(samples, events, now=None):
+    """Add this tick's reading of the active account and keep the last BURN_WINDOW."""
+    now = time.time() if now is None else now
+    poll = next((event for event in events if event.get('event') == 'poll'), {})
+    active = poll.get('active') if isinstance(poll.get('active'), dict) else {}
+    number = active.get('number')
+    headroom = (poll.get('headroomPct') or {}).get(str(number))
+    if type(number) is not int or not isinstance(headroom, (int, float)) or isinstance(headroom, bool):
+        return samples
+    samples = [*samples, [now, number, 100.0 - headroom]]
+    atomic_json(BASE / 'burn.json', samples)
+    return samples
+
+
+def burn_rate(samples):
+    """Points per second the work is spending. Pace belongs to the work, not the account,
+    so it carries across a switch: only the gap that spans a switch or a reset is skipped."""
+    spent = span = 0.0
+    for (start, account, used), (end, next_account, next_used) in zip(samples, samples[1:]):
+        if account == next_account and next_used >= used and end > start:
+            spent += next_used - used
+            span += end - start
+    return spent / span if span >= BURN_MIN_SPAN else 0.0
+
+
+def leave_at(threshold, samples):
+    """The usage at which Code must leave this tick: the configured threshold, brought
+    forward far enough that the current pace cannot reach the limit before the next look."""
+    margin = min(BURN_MAX_MARGIN, burn_rate(samples) * BURN_LEAD)
+    return max(AUTO_THRESHOLD_RANGE[0], min(threshold, round(100.0 - margin, 1)))
+
+
 def auto_events(threshold, timeout, hold=False):
     """One `auto --once` engine decision as JSON events. The engine paces its own usage
     polls through its usage store, so calling this every minute stays within rate limits.
@@ -527,12 +581,17 @@ def auto_tick(threshold, deadline=None, events=None):
         previous = safe_identity(deadline)
         engine_failed = False
         hold = None
+        leave = threshold
         if events is None:
             hold = hold_reason(previous)
+            # A hold only stops early moves; leaving before the limit is never held.
+            burn = read_burn()
+            leave = leave_at(threshold, burn)
             try:
-                events = auto_events(threshold, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT), hold=hold is not None)
+                events = auto_events(leave, deadline.timeout(deadlines.AUTO_ENGINE_TIMEOUT), hold=hold is not None)
             except (RuntimeError, OSError, subprocess.TimeoutExpired, deadlines.DeadlineExceeded):
                 engine_failed, events = True, []
+            note_burn(burn, events)
         switch = next((event for event in events if event.get('event') == 'switch' and not event.get('dryRun')), None)
         trigger = switch.get('trigger') if switch and isinstance(switch.get('trigger'), str) else None
         current = safe_identity(deadline) if (switch or engine_failed) else previous
@@ -549,7 +608,8 @@ def auto_tick(threshold, deadline=None, events=None):
                 reason = next((str(event.get('reason')) for event in events if event.get('event') == 'no-switch'),
                               'no_action')
             note_decision({'reason': reason, 'account': previous, 'hold': hold,
-                           'used': active_used(events, previous)})
+                           'used': active_used(events, previous),
+                           **({'leaveAt': math.floor(leave)} if leave < threshold else {})})
             if reason in ('auto_switch_failed', 'all_exhausted'):
                 return {'ok': True, 'switched': False, 'reason': reason}
             return {'ok': True, 'switched': False, 'reason': reason, **({'hold': hold} if hold else {})}

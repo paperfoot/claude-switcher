@@ -1,6 +1,7 @@
 import fcntl
 import io
 import json
+import math
 import os
 import sys
 import tempfile
@@ -1549,6 +1550,46 @@ class AutoTickTests(unittest.TestCase):
             decisions = [call for call in emit.call_args_list if call.args[1] == "auto_decision"]
             self.assertEqual(len(decisions), 1)
             self.assertEqual(decisions[0].kwargs, {"reason": "held", "hold": "manual", "used": 88})
+
+    def test_a_fast_burn_brings_the_exit_forward_and_a_slow_one_keeps_the_threshold(self):
+        # Tonight's run: 92% to 97% in seven minutes on one account.
+        fast = [[0, 3, 92.0], [180, 3, 94.0], [300, 3, 95.0], [420, 3, 97.0]]
+        self.assertAlmostEqual(companion.burn_rate(fast) * 60, 5 / 7)
+        self.assertEqual(companion.leave_at(99, fast), 92.9)
+        slow = [[0, 3, 60.0], [600, 3, 61.0]]
+        self.assertEqual(companion.leave_at(99, slow), 99)
+        # Too little history to judge a pace yet.
+        self.assertEqual(companion.leave_at(99, [[0, 3, 90.0], [60, 3, 95.0]]), 99)
+        # A burst brings the exit forward by at most BURN_MAX_MARGIN; a lower setting still wins.
+        self.assertEqual(companion.leave_at(99, [[0, 3, 10.0], [180, 3, 60.0]]), 80.0)
+        self.assertEqual(companion.leave_at(60, [[0, 3, 10.0], [180, 3, 60.0]]), 60)
+
+    def test_the_pace_carries_across_a_switch_but_not_the_jump_itself(self):
+        samples = [[0, 3, 90.0], [240, 3, 94.0], [300, 1, 16.0], [480, 1, 19.0]]
+        # 4 points in 240 s plus 3 in 180 s; the 94 -> 16 step between accounts is skipped.
+        self.assertAlmostEqual(companion.burn_rate(samples), 7 / 420)
+        # A reset reads as a drop and is skipped too.
+        self.assertEqual(companion.burn_rate([[0, 3, 98.0], [300, 3, 2.0]]), 0.0)
+
+    def test_the_tick_passes_the_paced_exit_to_the_engine_and_records_its_reading(self):
+        now = time.time()
+        self.base.mkdir(parents=True)
+        (self.base / "burn.json").write_text(json.dumps(
+            [[now - 900 - 5, 2, 50.0], [now - 420, 2, 92.0], [now - 60, 2, 97.0]]))
+        events = [{"event": "poll", "active": {"number": 2, "email": OLD_EMAIL}, "headroomPct": {"2": 2.0}},
+                  {"event": "no-switch", "reason": "cooldown"}]
+        with mock.patch.object(companion, "auto_events", return_value=events) as engine, \
+                mock.patch.object(companion, "hold_reason", return_value="agents"), \
+                mock.patch.object(companion.event_log, "emit") as emit:
+            companion.auto_tick(99)
+        leave = engine.call_args.args[0]
+        self.assertEqual(leave, 91.7)  # 5 points in 6 minutes: leave about 8 points early
+        self.assertEqual(engine.call_args.kwargs, {"hold": True})
+        decision = next(call for call in emit.call_args_list if call.args[1] == "auto_decision")
+        self.assertEqual(decision.kwargs["leaveAt"], math.floor(leave))
+        stored = json.loads((self.base / "burn.json").read_text())
+        self.assertEqual(len(stored), 3)  # the sample older than the window is dropped
+        self.assertEqual(stored[-1][1:], [2, 98.0])
 
     def test_recent_browser_or_computer_use_by_any_session_is_seen(self):
         home = Path(self.temporary.name) / "home"

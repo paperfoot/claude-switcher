@@ -53,7 +53,7 @@ def _record(event, fields):
             record[key] = value  # an engine decision code such as 'held' or 'below-threshold'
         elif key == 'hold' and value in HOLDS:
             record[key] = value
-        elif key == 'used' and type(value) is int and 0 <= value <= 100:
+        elif key in ('used', 'leaveAt') and type(value) is int and 0 <= value <= 100:
             record[key] = value
     return record
 

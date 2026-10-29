@@ -96,6 +96,8 @@ Before that, the switcher moves early only to save quota that would otherwise ex
 
 Running out still moves you, even then: at the limit the run would stop anyway.
 
+When agents spend quota fast, the move comes early enough to land before the limit: the switcher watches how fast usage is climbing and leaves once ten more minutes at that pace would reach the limit (at most 20 points early). The account it lands on needs that much room too. A held account is moved this way as well.
+
 - The decision comes from the switcher's own account engine: it refreshes the target's login first, never lands on an account that is near its own limit, and avoids switching back and forth.
 - Usage is polled at a pace Anthropic's usage endpoint accepts (roughly one request per account every few minutes, faster near the limit), so turning this on does not get accounts rate-limited.
 - Every automatic switch shows in the menu bar and in the menu, with the time.
