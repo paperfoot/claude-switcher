@@ -43,8 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var loginWarning: String?
     /// Lowercased emails whose saved Chrome login has expired; choosing one opens claude.ai's sign-in.
     private var chromeSignInEmails: Set<String> = []
-    /// Automatic switching waits after a manual choice, so it never overrides one at once.
-    private var lastManualSwitch: Date = .distantPast
     private var usageRefreshTimer: Timer?
     private var isSleeping = false
 
@@ -539,7 +537,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !isSwitchingAccount, !codexBusy,
               let email = config.profile(id: id)?.expectedEmail,
               let setup = CoordinatedSetup.load(), setup.enabled else { return }
-        lastManualSwitch = Date()
         isSwitchingAccount = true
         coordinatedGeneration += 1
         let generation = coordinatedGeneration
@@ -1637,9 +1634,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func autoSwitchTick() {
+        // A manual pick is held by the companion: only running low moves it, never an early move.
         guard config.autoSwitch, !isAutoSwitching, !isSwitchingAccount, !codexBusy, !isSleeping,
-              // Never override a choice the user has just made.
-              Date().timeIntervalSince(lastManualSwitch) >= 600,
               let setup = CoordinatedSetup.load(), setup.enabled else { return }
         isAutoSwitching = true
         let threshold = config.autoSwitchThreshold
